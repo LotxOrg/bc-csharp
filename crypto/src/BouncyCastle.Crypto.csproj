@@ -12,15 +12,15 @@
     <Authors>Legion of the Bouncy Castle Inc.</Authors>
     <Company>Legion of the Bouncy Castle Inc.</Company>
     <Copyright>Copyright © Legion of the Bouncy Castle Inc. 2000-2026</Copyright>
-    <Description>BouncyCastle.NET is a popular cryptography library for .NET</Description>
+    <Description>A fork of BouncyCastle.NET carrying OpenPGP version 6 (RFC 9580) certificate support ahead of its arrival upstream. Not affiliated with the Legion of the Bouncy Castle. Use the official BouncyCastle.Cryptography package once it supports version 6.</Description>
     <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net7.0'))">True</IsAotCompatible>
     <PackageIcon>packageIcon.png</PackageIcon>
     <PackageIconUrl>https://www.bouncycastle.org/stable/nuget/csharp/packageIcon.png</PackageIconUrl>
-    <PackageId>BouncyCastle.Cryptography</PackageId>
+    <PackageId>Lotx.BouncyCastle.Cryptography</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://www.bouncycastle.org/stable/nuget/csharp/website</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/LotxOrg/bc-csharp</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>https://www.bouncycastle.org/stable/nuget/csharp/release_notes</PackageReleaseNotes>
+    <PackageReleaseNotes>https://github.com/LotxOrg/bc-csharp/releases</PackageReleaseNotes>
     <PackageTags>bouncycastle cryptography dtls encryption open-source openpgp post-quantum security tls</PackageTags>
     <Product>BouncyCastle.NET</Product>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -98,17 +98,8 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Nerdbank.GitVersioning" Version="3.9.50">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
-  <Target Name="FixAssemblyAttributes" AfterTargets="GetBuildVersion">
-    <PropertyGroup>
-      <!-- Here we can override/use any MSBuild properties set by Nerdbank.GitVersioning -->
-    </PropertyGroup>
-  </Target>
   <Target Name="SignAssemblies" AfterTargets="PostBuildEvent" Condition="'$(Configuration)'=='Publish'">
     <Exec Command="call &quot;$(ProjectDir)..\..\signfile.bat&quot; &quot;$(TargetPath)&quot;" IgnoreStandardErrorWarningFormat="true" />
   </Target>

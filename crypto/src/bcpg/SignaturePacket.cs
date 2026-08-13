@@ -4,6 +4,7 @@ using System.IO;
 
 using Org.BouncyCastle.Bcpg.Sig;
 using Org.BouncyCastle.Crypto.Utilities;
+using Org.BouncyCastle.Math.EC.Rfc8032;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Date;
 using Org.BouncyCastle.Utilities.IO;
@@ -31,7 +32,8 @@ namespace Org.BouncyCastle.Bcpg
         private SignatureSubpacket[] hashedData;
         private SignatureSubpacket[] unhashedData;
         private byte[] signatureEncoding;
-        private readonly byte[] m_salt = null; // v6 only
+        private byte[] m_salt = null; // v6 only
+        private IssuerFingerprint m_issuerFingerprint = null;
 
         internal SignaturePacket(BcpgInputStream bcpgIn)
             : this(bcpgIn, newPacketFormat: false)
@@ -54,12 +56,14 @@ namespace Org.BouncyCastle.Bcpg
                 keyAlgorithm = (PublicKeyAlgorithmTag)bcpgIn.RequireByte();
                 hashAlgorithm = (HashAlgorithmTag)bcpgIn.RequireByte();
             }
-            else if (version == 4)
+            else if (version == 4 || version == Version6)
             {
                 signatureType = bcpgIn.RequireByte();
                 keyAlgorithm = (PublicKeyAlgorithmTag)bcpgIn.RequireByte();
                 hashAlgorithm = (HashAlgorithmTag)bcpgIn.RequireByte();
 
+                // ReadSignatureSubpackets already reads the four-octet area
+                // length a version 6 signature uses in place of two.
                 hashedData = ReadSignatureSubpackets(bcpgIn);
 
                 foreach (var p in hashedData)
@@ -72,6 +76,13 @@ namespace Org.BouncyCastle.Bcpg
                     {
                         m_creationTime = ParseCreationTimeOrThrow(signatureCreationTime);
                     }
+                    else if (p is IssuerFingerprint issuerFingerprint)
+                    {
+                        // A version 6 signature carries no Issuer Key ID: RFC
+                        // 9580 replaces it with the Issuer Fingerprint, and the
+                        // key ID is the leading eight octets of that.
+                        m_issuerFingerprint = issuerFingerprint;
+                    }
                 }
 
                 unhashedData = ReadSignatureSubpackets(bcpgIn);
@@ -81,6 +92,10 @@ namespace Org.BouncyCastle.Bcpg
                     if (p is IssuerKeyId issuerKeyId)
                     {
                         m_keyID = ParseKeyIdOrThrow(issuerKeyId);
+                    }
+                    else if (p is IssuerFingerprint issuerFingerprint && m_issuerFingerprint == null)
+                    {
+                        m_issuerFingerprint = issuerFingerprint;
                     }
                 }
 
@@ -96,6 +111,14 @@ namespace Org.BouncyCastle.Bcpg
 
             fingerprint = new byte[2];
             bcpgIn.ReadFully(fingerprint);
+
+            if (version == Version6)
+            {
+                // RFC 9580 5.2.3: a one-octet salt size, then the salt.
+                int saltSize = bcpgIn.RequireByte();
+                m_salt = new byte[saltSize];
+                bcpgIn.ReadFully(m_salt);
+            }
 
             switch (keyAlgorithm)
             {
@@ -116,6 +139,18 @@ namespace Org.BouncyCastle.Bcpg
                 MPInteger ecR = new MPInteger(bcpgIn);
                 MPInteger ecS = new MPInteger(bcpgIn);
                 signature = new MPInteger[2]{ ecR, ecS };
+                break;
+            case PublicKeyAlgorithmTag.Ed25519:
+                // RFC 9580 5.2.3.4: 64 octets of the native signature, not MPIs.
+                signature = null;
+                signatureEncoding = new byte[Ed25519.SignatureSize];
+                bcpgIn.ReadFully(signatureEncoding);
+                break;
+            case PublicKeyAlgorithmTag.Ed448:
+                // RFC 9580 5.2.3.5: 114 octets of the native signature.
+                signature = null;
+                signatureEncoding = new byte[Ed448.SignatureSize];
+                bcpgIn.ReadFully(signatureEncoding);
                 break;
             default:
                 if (keyAlgorithm < PublicKeyAlgorithmTag.Experimental_1 ||
@@ -243,10 +278,15 @@ namespace Org.BouncyCastle.Bcpg
             sOut.WriteByte((byte)KeyAlgorithm);
             sOut.WriteByte((byte)HashAlgorithm);
 
-            // Mark position an reserve two bytes for length
+            // Mark position and reserve space for the length: four octets for a
+            // version 6 signature, two for a version 4 one.
+            bool isV6 = version == Version6;
+            int lengthSize = isV6 ? 4 : 2;
             long lengthPosition = sOut.Position;
-            sOut.WriteByte(0x00);
-            sOut.WriteByte(0x00);
+            for (int i = 0; i < lengthSize; ++i)
+            {
+                sOut.WriteByte(0x00);
+            }
 
             SignatureSubpacket[] hashed = GetHashedSubPackets();
             for (int i = 0; i != hashed.Length; i++)
@@ -254,7 +294,7 @@ namespace Org.BouncyCastle.Bcpg
                 hashed[i].Encode(sOut);
             }
 
-            ushort dataLength = Convert.ToUInt16(sOut.Position - lengthPosition - 2);
+            uint dataLength = Convert.ToUInt32(sOut.Position - lengthPosition - lengthSize);
             uint hDataLength = Convert.ToUInt32(sOut.Position);
 
             sOut.WriteByte((byte)Version);
@@ -263,7 +303,14 @@ namespace Org.BouncyCastle.Bcpg
 
             // Reset position and fill in length
             sOut.Position = lengthPosition;
-            StreamUtilities.WriteUInt16BE(sOut, dataLength);
+            if (isV6)
+            {
+                StreamUtilities.WriteUInt32BE(sOut, dataLength);
+            }
+            else
+            {
+                StreamUtilities.WriteUInt16BE(sOut, Convert.ToUInt16(dataLength));
+            }
 
             return sOut.ToArray();
         }
@@ -471,6 +518,16 @@ namespace Org.BouncyCastle.Bcpg
         {
             if (m_keyID != 0L)
                 return;
+
+            // RFC 9580: a version 6 signature has no Issuer Key ID subpacket.
+            // Its issuer is named by fingerprint, and the key ID is derived
+            // from that.
+            if (m_issuerFingerprint != null)
+            {
+                m_keyID = (ulong)m_issuerFingerprint.GetKeyID();
+                if (m_keyID != 0L)
+                    return;
+            }
 
             for (int idx = 0; idx != hashedData.Length; idx++)
             {

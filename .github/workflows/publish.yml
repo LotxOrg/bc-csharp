@@ -1,0 +1,52 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  BASE_VERSION: 2.8.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Work out the version
+        id: version
+        run: echo "value=${BASE_VERSION}-beta.${{ github.run_number }}.g$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: dotnet build crypto/src/BouncyCastle.Crypto.csproj -c Release
+
+      - name: Test
+        run: dotnet test crypto/test/BouncyCastle.Crypto.Tests.csproj -c Release -f net6.0 --filter FullyQualifiedName~OpenPgp
+
+      - name: Pack
+        run: >
+          dotnet pack crypto/src/BouncyCastle.Crypto.csproj -c Release -o artifacts
+          -p:Version=${{ steps.version.outputs.value }}
+          -p:PackageVersion=${{ steps.version.outputs.value }}
+
+      - name: Publish
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --source https://nuget.pkg.github.com/LotxOrg/index.json
+          --api-key ${{ secrets.GITHUB_TOKEN }}
+          --skip-duplicate

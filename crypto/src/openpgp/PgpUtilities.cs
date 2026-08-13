@@ -545,11 +545,38 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         internal static IDigest CreateDigest(HashAlgorithmTag hashAlgorithm) =>
             DigestUtilities.GetDigest(GetDigestName(hashAlgorithm));
 
+        /// <summary>
+        /// The salt size a version 6 signature must use with the given hash
+        /// algorithm. RFC 9580 table 23.
+        /// </summary>
+        internal static int GetV6SignatureSaltSize(HashAlgorithmTag hashAlgorithm)
+        {
+            switch (hashAlgorithm)
+            {
+            case HashAlgorithmTag.Sha224:
+            case HashAlgorithmTag.Sha256:
+            case HashAlgorithmTag.Sha3_256:
+                return 16;
+            case HashAlgorithmTag.Sha384:
+                return 24;
+            case HashAlgorithmTag.Sha512:
+            case HashAlgorithmTag.Sha3_512:
+                return 32;
+            default:
+                throw new PgpException($"RFC 9580 defines no version 6 signature salt size for {hashAlgorithm}.");
+            }
+        }
+
         internal static ISigner CreateSigner(PublicKeyAlgorithmTag publicKeyAlgorithm, HashAlgorithmTag hashAlgorithm,
             AsymmetricKeyParameter key)
         {
             switch (publicKeyAlgorithm)
             {
+            case PublicKeyAlgorithmTag.Ed25519:
+                // RFC 9580 12.7: OpenPGP feeds the digest to pure Ed25519.
+                return new EdDsaSigner(new Ed25519Signer(), CreateDigest(hashAlgorithm));
+            case PublicKeyAlgorithmTag.Ed448:
+                return new EdDsaSigner(new Ed448Signer(Arrays.EmptyBytes), CreateDigest(hashAlgorithm));
             case PublicKeyAlgorithmTag.EdDsa_Legacy:
             {
                 ISigner signer;

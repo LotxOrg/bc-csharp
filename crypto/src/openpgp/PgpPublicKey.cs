@@ -143,7 +143,12 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             }
             else
             {
-                this.keyId = (long)Pack.BE_To_UInt64(fingerprint, fingerprint.Length - 8);
+                // RFC 9580 5.5.4.3: a version 6 key ID is the leading eight
+                // octets of the fingerprint, where version 4 takes the last
+                // eight.
+                this.keyId = publicPk.Version == PublicKeyPacket.Version6
+                    ? (long)Pack.BE_To_UInt64(fingerprint, 0)
+                    : (long)Pack.BE_To_UInt64(fingerprint, fingerprint.Length - 8);
 
                 if (key is RsaPublicBcpgKey)
                 {
@@ -689,6 +694,14 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             {
                 switch (publicPk.Algorithm)
                 {
+                case PublicKeyAlgorithmTag.Ed25519:
+                    // RFC 9580 5.5.5.9: 32 octets of native public key.
+                    return new Ed25519PublicKeyParameters(((Ed25519PublicBcpgKey)publicPk.Key).GetKey());
+                case PublicKeyAlgorithmTag.Ed448:
+                    // RFC 9580 5.5.5.10: 57 octets.
+                    return new Ed448PublicKeyParameters(((Ed448PublicBcpgKey)publicPk.Key).GetKey());
+                case PublicKeyAlgorithmTag.X25519:
+                    return new X25519PublicKeyParameters(((X25519PublicBcpgKey)publicPk.Key).GetKey());
                 case PublicKeyAlgorithmTag.RsaEncrypt:
                 case PublicKeyAlgorithmTag.RsaGeneral:
                 case PublicKeyAlgorithmTag.RsaSign:

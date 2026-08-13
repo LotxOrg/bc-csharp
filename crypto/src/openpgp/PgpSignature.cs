@@ -114,6 +114,33 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             {
                 throw new PgpException("invalid key.", e);
             }
+
+            UpdateWithSalt();
+        }
+
+        /// <summary>
+        /// RFC 9580 5.2.4: "When creating or verifying a version 6 signature,
+        /// the salt is fed into the hash context before any other data."
+        /// </summary>
+        private void UpdateWithSalt()
+        {
+            if (sigPck.Version != SignaturePacket.Version6)
+                return;
+
+            byte[] salt = sigPck.GetSalt();
+            if (salt == null)
+                throw new PgpException("version 6 signature has no salt.");
+
+            // RFC 9580 5.2.3 fixes the salt size for each hash algorithm, and a
+            // mismatch would hash a different byte sequence than the signer did.
+            int expected = PgpUtilities.GetV6SignatureSaltSize(sigPck.HashAlgorithm);
+            if (salt.Length != expected)
+            {
+                throw new PgpException(
+                    $"RFC 9580 defines the salt size for {sigPck.HashAlgorithm} as {expected} octets, but the signature has {salt.Length}.");
+            }
+
+            sig.BlockUpdate(salt, 0, salt.Length);
         }
 
         public void Update(byte b)
@@ -222,10 +249,25 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
 		{
 			byte[] keyBytes = GetEncodedPublicKey(key);
 
-			this.Update(
-				(byte) 0x99,
-				(byte)(keyBytes.Length >> 8),
-				(byte)(keyBytes.Length));
+			// RFC 9580 5.2.4: a version 6 signature over a key hashes 0x9B and
+			// a four-octet length, where version 4 uses 0x99 and two octets.
+			if (Version == SignaturePacket.Version6)
+			{
+				this.Update(
+					(byte)0x9B,
+					(byte)(keyBytes.Length >> 24),
+					(byte)(keyBytes.Length >> 16),
+					(byte)(keyBytes.Length >> 8),
+					(byte)(keyBytes.Length));
+			}
+			else
+			{
+				this.Update(
+					(byte) 0x99,
+					(byte)(keyBytes.Length >> 8),
+					(byte)(keyBytes.Length));
+			}
+
 			this.Update(keyBytes);
 		}
 
@@ -300,7 +342,8 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             PgpPublicKey pubKey)
         {
             if (SignatureType != KeyRevocation
-                && SignatureType != SubkeyRevocation)
+                && SignatureType != SubkeyRevocation
+                && SignatureType != DirectKey)
             {
                 throw new InvalidOperationException("signature is not a key signature");
             }
