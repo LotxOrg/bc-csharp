@@ -381,8 +381,8 @@ namespace Org.BouncyCastle.Bcpg
                 else if (version == Version4 || version == Version5 || version == Version6)
                 {
                     pOut.Write((byte)signatureType, (byte)keyAlgorithm, (byte)hashAlgorithm);
-                    EncodeLengthAndData(pOut, GetEncodedSubpackets(hashedData));
-                    EncodeLengthAndData(pOut, GetEncodedSubpackets(unhashedData));
+                    EncodeLengthAndData(pOut, GetEncodedSubpackets(hashedData), version);
+                    EncodeLengthAndData(pOut, GetEncodedSubpackets(unhashedData), version);
                 }
                 else
                 {
@@ -477,9 +477,19 @@ namespace Org.BouncyCastle.Bcpg
             return result.ToArray();
         }
 
-        private static void EncodeLengthAndData(BcpgOutputStream pOut, byte[] data)
+        private static void EncodeLengthAndData(BcpgOutputStream pOut, byte[] data, int version)
         {
-            StreamUtilities.WriteUInt16BE(pOut, (ushort)data.Length);
+            // Version 6 counts its subpacket areas in four octets, where
+            // version 4 uses two.
+            if (version == Version6)
+            {
+                StreamUtilities.WriteUInt32BE(pOut, (uint)data.Length);
+            }
+            else
+            {
+                StreamUtilities.WriteUInt16BE(pOut, (ushort)data.Length);
+            }
+
             pOut.Write(data);
         }
 

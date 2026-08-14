@@ -181,6 +181,28 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp.Tests
         }
 
         [Test]
+        public void ReEncodingACertificateKeepsItReadable()
+        {
+            // Encoding used to write two-octet subpacket lengths whatever the
+            // version, so a version 6 certificate read and written back could
+            // not be read again: the reader took the next four octets as the
+            // length and got a number in the millions.
+            PgpPublicKeyRing ring = ReadRing(SequoiaCertificate);
+            byte[] encoded = ring.GetEncoded();
+
+            PgpPublicKeyRing again = ReadRing(encoded);
+            PgpPublicKey key = again.GetPublicKey();
+
+            Assert.AreEqual(SequoiaFingerprint, Hex.ToHexString(key.GetFingerprint()).ToUpperInvariant());
+            Assert.AreEqual(ring.GetPublicKey().GetValidSeconds(), key.GetValidSeconds());
+            Assert.AreEqual(4, again.GetPublicKeys().ToArray().Length);
+
+            PgpSignature directKey = GetSignatureOfType(key, PgpSignature.DirectKey);
+            directKey.InitVerify(key);
+            Assert.IsTrue(directKey.VerifyCertification(key), "the signature must still verify after a round trip");
+        }
+
+        [Test]
         public void TamperedPrimaryKeyIsRejected()
         {
             // Offset 12 is inside the primary key material. Substituting a key
