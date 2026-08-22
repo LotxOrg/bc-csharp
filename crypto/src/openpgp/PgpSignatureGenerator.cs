@@ -262,6 +262,25 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
 			byte[] fingerPrint = new byte[2]{ digest[0], digest[1] };
 
 			MPInteger[] sigValues;
+            if (keyAlgorithm == PublicKeyAlgorithmTag.Ed25519 ||
+                keyAlgorithm == PublicKeyAlgorithmTag.Ed448)
+            {
+                // RFC 9580 5.2.3.3 and 5.2.3.4: the algorithm-specific part is the native
+                // signature, whole -- 64 octets for Ed25519 and 114 for Ed448 -- and not the two
+                // MPIs the deprecated EdDSALegacy form splits it into.
+                int expected = keyAlgorithm == PublicKeyAlgorithmTag.Ed25519
+                    ? Ed25519.SignatureSize
+                    : Ed448.SignatureSize;
+
+                if (sigBytes.Length != expected)
+                    throw new InvalidOperationException();
+
+                return new PgpSignature(
+                    new SignaturePacket(version, newPacketFormat: false, signatureType,
+                        privKey.KeyId, keyAlgorithm, hashAlgorithm, hPkts, unhPkts, fingerPrint,
+                        sigBytes));
+            }
+
             if (keyAlgorithm == PublicKeyAlgorithmTag.EdDsa_Legacy)
             {
                 int sigLen = sigBytes.Length;

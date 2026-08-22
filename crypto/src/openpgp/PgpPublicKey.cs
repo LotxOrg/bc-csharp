@@ -251,16 +251,34 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             }
             else if (pubKey is Ed25519PublicKeyParameters ed25519PubKey)
             {
-                byte[] pointEnc = new byte[1 + Ed25519PublicKeyParameters.KeySize];
-                pointEnc[0] = 0x40;
-                ed25519PubKey.Encode(pointEnc, 1);
-                bcpgKey = new EdDsaPublicBcpgKey(GnuObjectIdentifiers.Ed25519, new BigInteger(1, pointEnc));
+                if (algorithm == PublicKeyAlgorithmTag.Ed25519)
+                {
+                    // RFC 9580 5.5.5.9: 32 octets of native public key, no MPI and no 0x40 prefix.
+                    bcpgKey = new Ed25519PublicBcpgKey(ed25519PubKey.GetEncoded());
+                }
+                else
+                {
+                    byte[] pointEnc = new byte[1 + Ed25519PublicKeyParameters.KeySize];
+                    pointEnc[0] = 0x40;
+                    ed25519PubKey.Encode(pointEnc, 1);
+                    bcpgKey = new EdDsaPublicBcpgKey(GnuObjectIdentifiers.Ed25519,
+                        new BigInteger(1, pointEnc));
+                }
             }
             else if (pubKey is Ed448PublicKeyParameters ed448PubKey)
             {
-                byte[] pointEnc = new byte[Ed448PublicKeyParameters.KeySize];
-                ed448PubKey.Encode(pointEnc, 0);
-                bcpgKey = new EdDsaPublicBcpgKey(EdECObjectIdentifiers.id_Ed448, new BigInteger(1, pointEnc));
+                if (algorithm == PublicKeyAlgorithmTag.Ed448)
+                {
+                    // RFC 9580 5.5.5.10: 57 octets of native public key.
+                    bcpgKey = new Ed448PublicBcpgKey(ed448PubKey.GetEncoded());
+                }
+                else
+                {
+                    byte[] pointEnc = new byte[Ed448PublicKeyParameters.KeySize];
+                    ed448PubKey.Encode(pointEnc, 0);
+                    bcpgKey = new EdDsaPublicBcpgKey(EdECObjectIdentifiers.id_Ed448,
+                        new BigInteger(1, pointEnc));
+                }
             }
             else if (pubKey is X25519PublicKeyParameters x25519PubKey)
             {

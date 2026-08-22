@@ -73,6 +73,29 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
                 ECPrivateKeyParameters ecK = (ECPrivateKeyParameters)privKey.Key;
                 secKey = new ECSecretBcpgKey(ecK.D);
                 break;
+            case PublicKeyAlgorithmTag.Ed25519:
+                // RFC 9580 5.5.5.9: 32 octets of native secret key, stored as generated rather
+                // than as an MPI -- so, unlike the deprecated EdDSALegacy form below, there is
+                // nothing to strip and nothing to reverse.
+                secKey = new Ed25519SecretBcpgKey(
+                    ((Ed25519PrivateKeyParameters)privKey.Key).GetEncoded());
+                break;
+            case PublicKeyAlgorithmTag.Ed448:
+                // 5.5.5.10: 57 octets.
+                secKey = new Ed448SecretBcpgKey(
+                    ((Ed448PrivateKeyParameters)privKey.Key).GetEncoded());
+                break;
+            case PublicKeyAlgorithmTag.X25519:
+                // 5.5.5.7: "the value stored in an OpenPGP X25519 Secret Key packet is the original
+                // sequence of random octets".
+                secKey = new X25519SecretBcpgKey(
+                    ((X25519PrivateKeyParameters)privKey.Key).GetEncoded());
+                break;
+            case PublicKeyAlgorithmTag.X448:
+                // 5.5.5.8: 56 octets, on the same terms.
+                secKey = new X448SecretBcpgKey(
+                    ((X448PrivateKeyParameters)privKey.Key).GetEncoded());
+                break;
             case PublicKeyAlgorithmTag.EdDsa_Legacy:
             {
                 if (privKey.Key is Ed25519PrivateKeyParameters ed25519K)
@@ -648,6 +671,22 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
                     }
                     break;
                 }
+                case PublicKeyAlgorithmTag.Ed25519:
+                    privateKey = new Ed25519PrivateKeyParameters(
+                        new Ed25519SecretBcpgKey(bcpgIn).GetKey());
+                    break;
+                case PublicKeyAlgorithmTag.Ed448:
+                    privateKey = new Ed448PrivateKeyParameters(
+                        new Ed448SecretBcpgKey(bcpgIn).GetKey());
+                    break;
+                case PublicKeyAlgorithmTag.X25519:
+                    privateKey = new X25519PrivateKeyParameters(
+                        new X25519SecretBcpgKey(bcpgIn).GetKey());
+                    break;
+                case PublicKeyAlgorithmTag.X448:
+                    privateKey = new X448PrivateKeyParameters(
+                        new X448SecretBcpgKey(bcpgIn).GetKey());
+                    break;
                 case PublicKeyAlgorithmTag.ElGamalEncrypt:
                 case PublicKeyAlgorithmTag.ElGamalGeneral:
                     ElGamalPublicBcpgKey elPub = (ElGamalPublicBcpgKey)pubPk.Key;

@@ -229,6 +229,35 @@ namespace Org.BouncyCastle.Bcpg
             }
         }
 
+        /// <summary>
+        /// A signature whose algorithm-specific part is a native octet string rather than MPIs.
+        /// </summary>
+        /// <remarks>
+        /// RFC 9580 5.2.3.3 and 5.2.3.4 give Ed25519 and Ed448 signatures "64 octets of the native
+        /// signature" and "114 octets of the native signature" -- not the pair of MPIs the
+        /// deprecated EdDSALegacy form uses.
+        /// </remarks>
+        public SignaturePacket(int version, bool newPacketFormat, int signatureType, long keyId,
+            PublicKeyAlgorithmTag keyAlgorithm, HashAlgorithmTag hashAlgorithm, SignatureSubpacket[] hashedData,
+            SignatureSubpacket[] unhashedData, byte[] fingerprint, byte[] signatureEncoding)
+            : base(PacketTag.Signature, newPacketFormat)
+        {
+            this.version = version;
+            this.signatureType = signatureType;
+            m_keyID = (ulong)keyId;
+            this.keyAlgorithm = keyAlgorithm;
+            this.hashAlgorithm = hashAlgorithm;
+            this.hashedData = hashedData;
+            this.unhashedData = unhashedData;
+            this.fingerprint = fingerprint;
+            this.signatureEncoding = Arrays.Clone(signatureEncoding);
+
+            if (hashedData != null)
+            {
+                SetCreationTime();
+            }
+        }
+
         public int Version => version;
 
         public int SignatureType => signatureType;
