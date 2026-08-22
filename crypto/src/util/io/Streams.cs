@@ -1,5 +1,8 @@
 using System;
 using System.IO;
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+using System.Runtime.CompilerServices;
+#endif
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
 using System.Runtime.InteropServices;
 #endif
@@ -221,15 +224,63 @@ namespace Org.BouncyCastle.Utilities.IO
             return false;
         }
 
+        /// <summary>
+        /// Read exactly <paramref name="exactLength"/> bytes from <paramref name="stream"/>, allocated incrementally.
+        /// </summary>
+        /// <remarks>
+        /// The resulting <paramref name="bytes"/> array (if any) is grown incrementally as data arrives rather than
+        /// allocated at the full length up front. A caller passing an untrusted (possibly hostile) length therefore
+        /// cannot drive an extremely large allocation from a short input.
+        /// </remarks>
+        internal static bool TryReadExactIncremental(Stream stream, int exactLength, out byte[] bytes)
+        {
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+            if (exactLength < 0)
+                throw new ArgumentOutOfRangeException("cannot be negative", nameof(exactLength));
+            if (exactLength > Arrays.MaxLength)
+                throw new ArgumentOutOfRangeException("exceeds maximum length for an array", nameof(exactLength));
+
+            int initialAlloc = exactLength;
+            while (initialAlloc > DefaultBufferSize)
+            {
+                initialAlloc = (int)(((uint)initialAlloc + 3U) >> 2);
+            }
+
+            byte[] buf = new byte[initialAlloc];
+            int totalRead = 0;
+            while (totalRead < exactLength)
+            {
+                if (totalRead == buf.Length)
+                {
+                    int expandedAlloc = (int)System.Math.Min(exactLength, 4L * buf.Length);
+                    buf = Arrays.CopyOf(buf, expandedAlloc);
+                }
+
+                int numRead = stream.Read(buf, totalRead, buf.Length - totalRead);
+                if (numRead < 1)
+                {
+                    bytes = default;
+                    return false;
+                }
+
+                totalRead += numRead;
+            }
+
+            bytes = buf;
+            return true;
+        }
+
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
         public static void ValidateBufferArguments(byte[] buffer, int offset, int count)
         {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
-            int available = buffer.Length - offset;
-            if ((offset | available) < 0)
+            if (offset < 0)
                 throw new ArgumentOutOfRangeException(nameof(offset));
-            int remaining = available - count;
-            if ((count | remaining) < 0)
+            if ((uint)count > buffer.Length - offset)
                 throw new ArgumentOutOfRangeException(nameof(count));
         }
 

@@ -9,6 +9,7 @@ using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Pkix;
+using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Collections;
 using Org.BouncyCastle.Utilities.Date;
 using Org.BouncyCastle.X509;
@@ -64,6 +65,151 @@ namespace Org.BouncyCastle.Tests
             PkixCertPath path = result.CertPath;
 
             Assert.AreEqual(2, path.Certificates.Count, "wrong number of certs in " + nameof(Basic));
+        }
+
+        /// <summary>
+        /// The builder's depth-first search matches candidate issuers by subject name only, so a certificate store full
+        /// of self-issued certificates that all share one subject DN and never chain to the trust anchor is explored as
+        /// a large number of partial paths before the build concludes no chain exists.
+        /// <see cref="Properties.X509MaxCertPathBuildNodes"/> bounds that work. Here maxPathLength is left unbounded so
+        /// only the node budget can stop the search, and the budget is forced low so the guard trips promptly; the
+        /// build must fail with a <see cref="PkixCertPathBuilderException"/> naming the property.
+        /// </summary>
+        /// <remarks>
+        /// Without the guard this build explores millions of nodes before failing with the generic
+        /// "Unable to find certificate chain".
+        /// </remarks>
+        [Test]
+        public void BuilderNodeBudgetTest()
+        {
+            int decoyCount = 10;
+            X509Name loopDN = new X509Name("CN=Loop");
+
+            List<X509Certificate> decoys = new List<X509Certificate>();
+            for (int i = 0; i < decoyCount; ++i)
+            {
+                AsymmetricCipherKeyPair pair = TestUtilities.GenerateRsaKeyPair();
+                decoys.Add(SelfSignedV3CACert(pair, loopDN, ComputeSki(pair.Public)));
+            }
+
+            // Trust anchor with an unrelated DN, so no path ever chains to it.
+            AsymmetricCipherKeyPair rootPair = TestUtilities.GenerateRsaKeyPair();
+            X509Certificate rootCert = SelfSignedV3CACert(rootPair, new X509Name("CN=Unrelated Root"),
+                ComputeSki(rootPair.Public));
+
+            IStore<X509Certificate> x509CertStore = CollectionUtilities.CreateStore(decoys);
+
+            var anchors = new HashSet<TrustAnchor>();
+            anchors.Add(new TrustAnchor(rootCert, null));
+
+            // Target selector matches every decoy by their shared subject DN.
+            X509CertStoreSelector pathConstraints = new X509CertStoreSelector();
+            pathConstraints.Subject = loopDN;
+
+            PkixBuilderParameters buildParams = new PkixBuilderParameters(anchors, pathConstraints);
+            buildParams.AddStoreCert(x509CertStore);
+            buildParams.Date = DateTime.UtcNow;
+            buildParams.IsRevocationEnabled = false;
+            buildParams.MaxPathLength = -1;
+
+            try
+            {
+                var result = Properties.WithThreadProperty(Properties.X509MaxCertPathBuildNodes, "2000", () =>
+                {
+                    PkixCertPathBuilder builder = new PkixCertPathBuilder();
+                    return builder.Build(buildParams);
+                });
+
+                Assert.Fail("expected PkixCertPathBuilderException: build should not have found a chain");
+            }
+            catch (PkixCertPathBuilderException e)
+            {
+                string msg = e.Message;
+                if (msg == null || msg.IndexOf(Properties.X509MaxCertPathBuildNodes) < 0)
+                {
+                    Assert.Fail("build aborted but not via the node-budget guard: " + msg);
+                }
+            }
+        }
+
+        [Test]
+        public void EEInSelectorTest()
+        {
+            // create certificates and CRLs
+            AsymmetricCipherKeyPair rootPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair interPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair endPair = TestUtilities.GenerateRsaKeyPair();
+
+            X509Certificate rootCert = TestUtilities.GenerateRootCert(rootPair);
+            X509Certificate interCert = TestUtilities.GenerateIntermediateCert(interPair.Public, rootPair.Private, rootCert);
+            X509Certificate endCert = TestUtilities.GenerateEndEntityCert(endPair.Public, interPair.Private, interCert);
+
+            // create CertStore to support path building
+            var certList = new List<X509Certificate>();
+            certList.Add(interCert);
+            certList.Add(endCert);
+
+            IStore<X509Certificate> x509CertStore = CollectionUtilities.CreateStore(certList);
+
+            var trust = new HashSet<TrustAnchor>();
+            trust.Add(new TrustAnchor(rootCert, null));
+
+            // build the path
+            PkixCertPathBuilder builder = new PkixCertPathBuilder();
+            X509CertStoreSelector pathConstraints = new X509CertStoreSelector();
+
+            pathConstraints.Certificate = endCert;
+
+            PkixBuilderParameters buildParams = new PkixBuilderParameters(trust, pathConstraints);
+            buildParams.AddStoreCert(x509CertStore);
+            buildParams.Date = DateTime.UtcNow;
+            buildParams.IsRevocationEnabled = false;
+
+            PkixCertPathBuilderResult result = builder.Build(buildParams);
+            PkixCertPath path = result.CertPath;
+
+            Assert.AreEqual(2, path.Certificates.Count, $"wrong number of certs in {nameof(EEInSelectorTest)} path");
+        }
+
+        [Test]
+        public void EEOnlyInSelectorTest()
+        {
+            // create certificates and CRLs
+            AsymmetricCipherKeyPair rootPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair interPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair endPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair miscPair = TestUtilities.GenerateRsaKeyPair();
+
+            X509Certificate rootCert = TestUtilities.GenerateRootCert(rootPair);
+            X509Certificate interCert = TestUtilities.GenerateIntermediateCert(interPair.Public, rootPair.Private, rootCert);
+            X509Certificate endCert = TestUtilities.GenerateEndEntityCert(endPair.Public, interPair.Private, interCert);
+            X509Certificate miscCert = TestUtilities.GenerateEndEntityCert(miscPair.Public, interPair.Private, interCert);
+
+            // create CertStore to support path building
+            var certList = new List<X509Certificate>();
+            certList.Add(interCert);
+            certList.Add(miscCert);
+
+            IStore<X509Certificate> x509CertStore = CollectionUtilities.CreateStore(certList);
+
+            var trust = new HashSet<TrustAnchor>();
+            trust.Add(new TrustAnchor(rootCert, null));
+
+            // build the path
+            PkixCertPathBuilder builder = new PkixCertPathBuilder();
+            X509CertStoreSelector pathConstraints = new X509CertStoreSelector();
+
+            pathConstraints.Certificate = endCert;
+
+            PkixBuilderParameters buildParams = new PkixBuilderParameters(trust, pathConstraints);
+            buildParams.AddStoreCert(x509CertStore);
+            buildParams.Date = DateTime.UtcNow;
+            buildParams.IsRevocationEnabled = false;
+
+            PkixCertPathBuilderResult result = builder.Build(buildParams);
+            PkixCertPath path = result.CertPath;
+
+            Assert.AreEqual(2, path.Certificates.Count, $"wrong number of certs in {nameof(EEOnlyInSelectorTest)} path");
         }
 
         [Test]
@@ -219,6 +365,56 @@ namespace Org.BouncyCastle.Tests
         }
 
         [Test]
+        public void NoSigV0Test()
+        {
+            // create certificates and CRLs
+            AsymmetricCipherKeyPair rootPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair interPair = TestUtilities.GenerateRsaKeyPair();
+            AsymmetricCipherKeyPair endPair = TestUtilities.GenerateRsaKeyPair();
+
+            X509Certificate rootCert = TestUtilities.GenerateNoSigRootCert(rootPair);
+            X509Certificate interCert = TestUtilities.GenerateIntermediateCert(interPair.Public, rootPair.Private, rootCert);
+            X509Certificate endCert = TestUtilities.GenerateEndEntityCert(endPair.Public, interPair.Private, interCert);
+
+            BigInteger revokedSerialNumber = BigInteger.Two;
+            X509Crl rootCRL = TestUtilities.CreateCrl(rootCert, rootPair.Private, revokedSerialNumber);
+            X509Crl interCRL = TestUtilities.CreateCrl(interCert, interPair.Private, revokedSerialNumber);
+
+            // create CertStore to support path building
+            var certList = new List<X509Certificate>();
+            certList.Add(rootCert);
+            certList.Add(interCert);
+            certList.Add(endCert);
+
+            var crlList = new List<X509Crl>();
+            crlList.Add(rootCRL);
+            crlList.Add(interCRL);
+
+            IStore<X509Certificate> x509CertStore = CollectionUtilities.CreateStore(certList);
+            IStore<X509Crl> x509CrlStore = CollectionUtilities.CreateStore(crlList);
+
+            var trust = new HashSet<TrustAnchor>();
+            trust.Add(new TrustAnchor(rootCert, null));
+
+            // build the path
+            PkixCertPathBuilder builder = new PkixCertPathBuilder();
+            X509CertStoreSelector pathConstraints = new X509CertStoreSelector();
+
+            pathConstraints.Subject = endCert.SubjectDN;
+
+            PkixBuilderParameters buildParams = new PkixBuilderParameters(trust, pathConstraints);
+            buildParams.AddStoreCert(x509CertStore);
+            buildParams.AddStoreCrl(x509CrlStore);
+
+            buildParams.Date = DateTime.UtcNow;
+
+            PkixCertPathBuilderResult result = builder.Build(buildParams);
+            PkixCertPath path = result.CertPath;
+
+            Assert.AreEqual(2, path.Certificates.Count, $"wrong number of certs in {nameof(NoSigV0Test)} path");
+        }
+
+        [Test]
         public void V0Test()
         {
             // create certificates and CRLs
@@ -265,7 +461,7 @@ namespace Org.BouncyCastle.Tests
             PkixCertPathBuilderResult result = builder.Build(buildParams);
             PkixCertPath path = result.CertPath;
 
-            Assert.AreEqual(2, path.Certificates.Count, "wrong number of certs in " + nameof(V0Test));
+            Assert.AreEqual(2, path.Certificates.Count, $"wrong number of certs in {nameof(V0Test)} path");
         }
 
         private static SubjectKeyIdentifier ComputeSki(AsymmetricKeyParameter publicKey) =>
