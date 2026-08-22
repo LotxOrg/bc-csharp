@@ -59,6 +59,12 @@ namespace Org.BouncyCastle.Bcpg
             case PublicKeyAlgorithmTag.ECDH:
                 m_data = new byte[][]{ Streams.ReadAll(bcpgIn) };
                 break;
+            case PublicKeyAlgorithmTag.X25519:
+            case PublicKeyAlgorithmTag.X448:
+                // RFC 9580 5.1.6 and 5.1.7: an ephemeral public key of fixed size, a one-octet
+                // length, and then the fields that length covers. Read whole, like ECDH.
+                m_data = new byte[][]{ Streams.ReadAll(bcpgIn) };
+                break;
             default:
                 throw new IOException("unknown PGP public key algorithm encountered");
             }

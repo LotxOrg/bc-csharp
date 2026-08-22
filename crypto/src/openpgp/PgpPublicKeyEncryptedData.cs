@@ -128,6 +128,9 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         {
             byte[][] secKeyData = m_keyData.GetEncSessionKey();
 
+            if (Rfc9580Utilities.IsNativeDiffieHellman(m_keyData.Algorithm))
+                return RecoverSessionDataNativeDH(privKey, secKeyData[0]);
+
             if (m_keyData.Algorithm != PublicKeyAlgorithmTag.ECDH)
             {
                 IBufferedCipher cipher = GetKeyCipher(m_keyData.Algorithm);
@@ -235,6 +238,83 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             wrapper.Init(forWrapping: false, key);
 
             return PgpPad.UnpadSessionData(wrapper.Unwrap(keyEnc, 0, keyEnc.Length));
+        }
+
+        /// <summary>
+        /// RFC 9580 5.1.6 and 5.1.7. The session key is wrapped on its own, with the symmetric
+        /// algorithm identifier beside it in the clear and no checksum; the block returned here is
+        /// rebuilt in the shape every other algorithm produces, so that the rest of this class does
+        /// not have to know which one it was.
+        /// </summary>
+        private byte[] RecoverSessionDataNativeDH(PgpPrivateKey privKey, byte[] enc)
+        {
+            var algorithm = m_keyData.Algorithm;
+            int publicKeyLength = Rfc9580Utilities.PublicKeyLength(algorithm);
+
+            // The ephemeral public key, a one-octet length, and the fields that length covers: the
+            // algorithm identifier and the wrapped key.
+            if (enc.Length < publicKeyLength + 2)
+                throw new PgpException("encoded length out of range");
+
+            int fieldsLength = enc[publicKeyLength];
+            if (fieldsLength < 2 || publicKeyLength + 1 + fieldsLength > enc.Length)
+                throw new PgpException("encoded length out of range");
+
+            byte[] ephemeralPublicKey = Arrays.CopyOfRange(enc, 0, publicKeyLength);
+            byte sessionKeyAlgorithm = enc[publicKeyLength + 1];
+            byte[] wrapped = Arrays.CopyOfRange(enc, publicKeyLength + 2,
+                publicKeyLength + 1 + fieldsLength);
+
+            byte[] recipientPublicKey, secret;
+
+            if (algorithm == PublicKeyAlgorithmTag.X25519)
+            {
+                if (!(privKey.PublicKeyPacket.Key is X25519PublicBcpgKey x25519Key))
+                    throw new PgpException("session key is for X25519, but the key is not");
+
+                var agreement = new X25519Agreement();
+                agreement.Init(privKey.Key);
+                secret = new byte[agreement.AgreementSize];
+                agreement.CalculateAgreement(new X25519PublicKeyParameters(ephemeralPublicKey),
+                    secret, 0);
+
+                recipientPublicKey = x25519Key.GetKey();
+            }
+            else
+            {
+                if (!(privKey.PublicKeyPacket.Key is X448PublicBcpgKey x448Key))
+                    throw new PgpException("session key is for X448, but the key is not");
+
+                var agreement = new X448Agreement();
+                agreement.Init(privKey.Key);
+                secret = new byte[agreement.AgreementSize];
+                agreement.CalculateAgreement(new X448PublicKeyParameters(ephemeralPublicKey),
+                    secret, 0);
+
+                recipientPublicKey = x448Key.GetKey();
+            }
+
+            var key = Rfc9580Utilities.CreateKey(algorithm, ephemeralPublicKey, recipientPublicKey,
+                secret);
+
+            IWrapper wrapper = PgpUtilities.CreateWrapper(Rfc9580Utilities.KeyWrapAlgorithm(algorithm));
+            wrapper.Init(forWrapping: false, key);
+
+            byte[] sessionKey = wrapper.Unwrap(wrapped, 0, wrapped.Length);
+
+            byte[] sessionData = new byte[1 + sessionKey.Length + 2];
+            sessionData[0] = sessionKeyAlgorithm;
+            Array.Copy(sessionKey, 0, sessionData, 1, sessionKey.Length);
+
+            int check = 0;
+            foreach (byte b in sessionKey)
+            {
+                check += b;
+            }
+
+            Pack.UInt16_To_BE((ushort)check, sessionData, sessionData.Length - 2);
+
+            return sessionData;
         }
 
         private static bool ConfirmCheckSum(byte[] sessionInfo)

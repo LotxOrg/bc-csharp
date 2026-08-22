@@ -99,6 +99,9 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             {
                 var cryptoPublicKey = pubKey.GetKey();
 
+                if (Rfc9580Utilities.IsNativeDiffieHellman(pubKey.Algorithm))
+                    return EncryptSessionInfoNativeDH(sessionInfo, cryptoPublicKey, random);
+
                 if (pubKey.Algorithm != PublicKeyAlgorithmTag.ECDH)
                 {
                     IBufferedCipher c;
@@ -208,6 +211,76 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
                 }
             }
 
+            /// <summary>
+            /// RFC 9580 5.1.6 and 5.1.7, for the X25519 and X448 algorithms the same document
+            /// introduced. The layout is the ephemeral public key, a one-octet length, the
+            /// symmetric algorithm identifier in the clear, and the wrapped session key -- and
+            /// unlike ECDH, neither a checksum nor padding is wrapped with the key.
+            /// </summary>
+            private byte[] EncryptSessionInfoNativeDH(byte[] sessionInfo,
+                AsymmetricKeyParameter cryptoPublicKey, SecureRandom random)
+            {
+                var algorithm = pubKey.Algorithm;
+                Rfc9580Utilities.ValidateSessionKeyAlgorithm(algorithm,
+                    (SymmetricKeyAlgorithmTag)sessionInfo[0]);
+
+                byte[] ephemeralPublicKey, recipientPublicKey, secret;
+
+                if (algorithm == PublicKeyAlgorithmTag.X25519)
+                {
+                    if (!(cryptoPublicKey is X25519PublicKeyParameters recipient))
+                        throw new PgpException("key is not an X25519 key");
+
+                    var gen = new X25519KeyPairGenerator();
+                    gen.Init(new X25519KeyGenerationParameters(random));
+                    var ephKp = gen.GenerateKeyPair();
+
+                    var agreement = new X25519Agreement();
+                    agreement.Init(ephKp.Private);
+                    secret = new byte[agreement.AgreementSize];
+                    agreement.CalculateAgreement(recipient, secret, 0);
+
+                    ephemeralPublicKey = ((X25519PublicKeyParameters)ephKp.Public).GetEncoded();
+                    recipientPublicKey = recipient.GetEncoded();
+                }
+                else
+                {
+                    if (!(cryptoPublicKey is X448PublicKeyParameters recipient))
+                        throw new PgpException("key is not an X448 key");
+
+                    var gen = new X448KeyPairGenerator();
+                    gen.Init(new X448KeyGenerationParameters(random));
+                    var ephKp = gen.GenerateKeyPair();
+
+                    var agreement = new X448Agreement();
+                    agreement.Init(ephKp.Private);
+                    secret = new byte[agreement.AgreementSize];
+                    agreement.CalculateAgreement(recipient, secret, 0);
+
+                    ephemeralPublicKey = ((X448PublicKeyParameters)ephKp.Public).GetEncoded();
+                    recipientPublicKey = recipient.GetEncoded();
+                }
+
+                var key = Rfc9580Utilities.CreateKey(algorithm, ephemeralPublicKey, recipientPublicKey,
+                    secret);
+
+                IWrapper w = PgpUtilities.CreateWrapper(Rfc9580Utilities.KeyWrapAlgorithm(algorithm));
+                w.Init(true, new ParametersWithRandom(key, random));
+
+                // The session info is the algorithm identifier, the session key, and a two-octet
+                // checksum. Only the key is wrapped.
+                byte[] sessionKey = Arrays.CopyOfRange(sessionInfo, 1, sessionInfo.Length - 2);
+                byte[] wrapped = w.Wrap(sessionKey, 0, sessionKey.Length);
+
+                byte[] rv = new byte[ephemeralPublicKey.Length + 2 + wrapped.Length];
+                Array.Copy(ephemeralPublicKey, 0, rv, 0, ephemeralPublicKey.Length);
+                rv[ephemeralPublicKey.Length] = (byte)(1 + wrapped.Length);
+                rv[ephemeralPublicKey.Length + 1] = sessionInfo[0];
+                Array.Copy(wrapped, 0, rv, ephemeralPublicKey.Length + 2, wrapped.Length);
+
+                return rv;
+            }
+
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
             private byte[] EncryptSessionInfo(ECDHPublicBcpgKey ecPubKey, byte[] sessionInfo, byte[] secret,
                 ReadOnlySpan<byte> ephPubEncoding, SecureRandom random)
@@ -260,6 +333,8 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
                 };
                     break;
                 case PublicKeyAlgorithmTag.ECDH:
+                case PublicKeyAlgorithmTag.X25519:
+                case PublicKeyAlgorithmTag.X448:
                     data = new byte[1][]{ encryptedSessionInfo };
                     break;
                 default:

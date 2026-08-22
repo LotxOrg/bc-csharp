@@ -264,24 +264,42 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             }
             else if (pubKey is X25519PublicKeyParameters x25519PubKey)
             {
-                byte[] pointEnc = new byte[1 + X25519PublicKeyParameters.KeySize];
-                pointEnc[0] = 0x40;
-                x25519PubKey.Encode(pointEnc, 1);
+                if (algorithm == PublicKeyAlgorithmTag.X25519)
+                {
+                    // RFC 9580 5.5.5.7: 32 octets of native public key, no MPI and no 0x40 prefix.
+                    bcpgKey = new X25519PublicBcpgKey(x25519PubKey.GetEncoded());
+                }
+                else
+                {
+                    byte[] pointEnc = new byte[1 + X25519PublicKeyParameters.KeySize];
+                    pointEnc[0] = 0x40;
+                    x25519PubKey.Encode(pointEnc, 1);
 
-                PgpKdfParameters kdfParams = DefaultKdfParameters;
+                    PgpKdfParameters kdfParams = DefaultKdfParameters;
 
-                bcpgKey = new ECDHPublicBcpgKey(CryptlibObjectIdentifiers.curvey25519, new BigInteger(1, pointEnc),
-                    kdfParams.HashAlgorithm, kdfParams.SymmetricWrapAlgorithm);
+                    bcpgKey = new ECDHPublicBcpgKey(CryptlibObjectIdentifiers.curvey25519,
+                        new BigInteger(1, pointEnc), kdfParams.HashAlgorithm,
+                        kdfParams.SymmetricWrapAlgorithm);
+                }
             }
             else if (pubKey is X448PublicKeyParameters x448PubKey)
             {
-                byte[] pointEnc = new byte[X448PublicKeyParameters.KeySize];
-                x448PubKey.Encode(pointEnc, 0);
+                if (algorithm == PublicKeyAlgorithmTag.X448)
+                {
+                    // RFC 9580 5.5.5.8: 56 octets of native public key.
+                    bcpgKey = new X448PublicBcpgKey(x448PubKey.GetEncoded());
+                }
+                else
+                {
+                    byte[] pointEnc = new byte[X448PublicKeyParameters.KeySize];
+                    x448PubKey.Encode(pointEnc, 0);
 
-                PgpKdfParameters kdfParams = DefaultKdfParameters;
+                    PgpKdfParameters kdfParams = DefaultKdfParameters;
 
-                bcpgKey = new ECDHPublicBcpgKey(EdECObjectIdentifiers.id_X448, new BigInteger(1, pointEnc),
-                    kdfParams.HashAlgorithm, kdfParams.SymmetricWrapAlgorithm);
+                    bcpgKey = new ECDHPublicBcpgKey(EdECObjectIdentifiers.id_X448,
+                        new BigInteger(1, pointEnc), kdfParams.HashAlgorithm,
+                        kdfParams.SymmetricWrapAlgorithm);
+                }
             }
             else
             {
@@ -702,6 +720,8 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
                     return new Ed448PublicKeyParameters(((Ed448PublicBcpgKey)publicPk.Key).GetKey());
                 case PublicKeyAlgorithmTag.X25519:
                     return new X25519PublicKeyParameters(((X25519PublicBcpgKey)publicPk.Key).GetKey());
+                case PublicKeyAlgorithmTag.X448:
+                    return new X448PublicKeyParameters(((X448PublicBcpgKey)publicPk.Key).GetKey());
                 case PublicKeyAlgorithmTag.RsaEncrypt:
                 case PublicKeyAlgorithmTag.RsaGeneral:
                 case PublicKeyAlgorithmTag.RsaSign:
