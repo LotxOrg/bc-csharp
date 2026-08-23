@@ -130,6 +130,19 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         /// <summary>Return the raw input stream for the data stream.</summary>
         public virtual Stream GetInputStream() => m_encData.GetInputStream();
 
+        /// <summary>
+        /// The version 2 SEIPD packet holding this data, or null where it is held by anything else.
+        /// </summary>
+        /// <remarks>
+        /// A version 2 packet is authenticated chunk by chunk as it is read rather than by a
+        /// modification detection code at the end, so the two are handled by different code paths
+        /// from here down.
+        /// </remarks>
+        internal SymmetricEncIntegrityPacket Seipd2Packet =>
+            m_encData is SymmetricEncIntegrityPacket seipd && seipd.Version == SymmetricEncIntegrityPacket.Version2
+                ? seipd
+                : null;
+
         /// <summary>Return true if the message is integrity protected.</summary>
         /// <returns>True, if there is a modification detection code namespace associated
         /// with this stream.</returns>
@@ -141,6 +154,15 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         {
             if (!IsIntegrityProtected())
                 throw new PgpException("data not integrity protected.");
+
+            if (Seipd2Packet != null)
+            {
+                // Every chunk was authenticated as it was read, and the tag closing the packet
+                // covers the total length. Draining what is left forces that final tag to be
+                // checked; anything wrong throws rather than answering false.
+                Streams.Drain(m_decStream);
+                return true;
+            }
 
             DigestStream digestStream = (DigestStream)m_decStream;
 
@@ -163,7 +185,7 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
 
         internal Stream InitDecStream(Stream decStream)
         {
-            if (IsIntegrityProtected())
+            if (IsIntegrityProtected() && Seipd2Packet == null)
             {
                 var truncStream = new TruncatedStream(decStream);
                 var readDigest = PgpUtilities.CreateDigest(HashAlgorithmTag.Sha1);

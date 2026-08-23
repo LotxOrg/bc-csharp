@@ -58,11 +58,80 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         /// </remarks>
         public long KeyId => m_keyData.KeyId;
 
+        /// <summary>The version of the PKESK packet: 3, or 6 where the recipient is named by fingerprint.</summary>
+        public int Version => m_keyData.Version;
+
+        /// <summary>
+        /// Whether the packet withholds the key it was encrypted to, so that <see cref="KeyId"/>
+        /// names nothing and the reader has to work through the keys it holds.
+        /// </summary>
+        /// <remarks>
+        /// RFC 9580 5.1.8: a Key ID of all zeros, or an omitted fingerprint, hides the intended
+        /// decryption key, and "this format helps reduce traffic analysis of messages".
+        /// </remarks>
+        public bool IsAnonymous => m_keyData.IsAnonymous;
+
+        /// <summary>
+        /// The decrypted data stream, or null where this is not the key the session key was
+        /// encrypted to.
+        /// </summary>
+        /// <remarks>
+        /// This is what an anonymous packet needs: a caller can try each key it holds without
+        /// treating the ones that do not fit as errors. A key of the wrong algorithm is refused
+        /// outright, and a key of the right algorithm that fails to unwrap the session key -- which
+        /// the key wrap's own integrity check, or the session key checksum, detects -- answers null
+        /// rather than throwing. Anything else is a real failure and is thrown.
+        /// <para>
+        /// It answers null for a named packet whose key does not match as well, so a caller need
+        /// not treat the two shapes differently.
+        /// </para>
+        /// <para>
+        /// A failed attempt does not consume the packet: the session key is recovered before the
+        /// encrypted data stream is opened, so a caller may keep trying keys on the same object.
+        /// </para>
+        /// </remarks>
+        public Stream TryGetDataStream(PgpPrivateKey privKey)
+        {
+            if (privKey == null)
+                throw new ArgumentNullException(nameof(privKey));
+
+            // Established before any decryption is attempted, so that a mismatch here is not
+            // confused with a key that could have fitted and did not.
+            if (privKey.PublicKeyPacket.Algorithm != m_keyData.Algorithm)
+                return null;
+
+            if (!IsAnonymous && privKey.KeyId != m_keyData.KeyId)
+                return null;
+
+            try
+            {
+                return GetDataStream(privKey);
+            }
+            catch (PgpKeyValidationException)
+            {
+                // The session key came back, but its checksum says it is not the session key.
+                return null;
+            }
+            catch (InvalidCipherTextException)
+            {
+                return null;
+            }
+            catch (PgpException e) when (e.InnerException is InvalidCipherTextException)
+            {
+                return null;
+            }
+        }
+
         /// <summary>
         /// Return the algorithm code for the symmetric algorithm used to encrypt the data.
         /// </summary>
         public SymmetricKeyAlgorithmTag GetSymmetricAlgorithm(PgpPrivateKey privKey)
         {
+            // RFC 9580 5.1.2: a v6 packet passes no algorithm identifier to the public key
+            // algorithm, "as it is included in the v2 SEIPD packet".
+            if (m_keyData.Version == PublicKeyEncSessionPacket.Version6)
+                return RequireSeipd2Packet().CipherAlgorithm;
+
             byte[] sessionData = RecoverSessionData(privKey);
 
             return (SymmetricKeyAlgorithmTag)sessionData[0];
@@ -71,6 +140,9 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         /// <summary>Return the decrypted data stream for the packet.</summary>
         public Stream GetDataStream(PgpPrivateKey privKey)
         {
+            if (m_keyData.Version == PublicKeyEncSessionPacket.Version6)
+                return GetDataStreamV6(privKey);
+
             byte[] sessionData = RecoverSessionData(privKey);
 
             if (!ConfirmCheckSum(sessionData))
@@ -124,51 +196,133 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             }
         }
 
+        /// <summary>
+        /// A version 6 PKESK packet can only be followed by a version 2 SEIPD packet, which says
+        /// which cipher and AEAD mode were used and carries the salt the message key is derived
+        /// from.
+        /// </summary>
+        private Stream GetDataStreamV6(PgpPrivateKey privKey)
+        {
+            var seipd2 = RequireSeipd2Packet();
+
+            byte[] sessionKey = RecoverSessionKeyV6(privKey);
+
+            try
+            {
+                return InitDecStream(new Seipd2InputStream(GetInputStream(), seipd2.CipherAlgorithm,
+                    seipd2.AeadAlgorithm, seipd2.ChunkSize, sessionKey, seipd2.Salt));
+            }
+            catch (PgpException)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                throw new PgpException("Exception starting decryption", e);
+            }
+            finally
+            {
+                Arrays.ZeroMemory(sessionKey);
+            }
+        }
+
+        private SymmetricEncIntegrityPacket RequireSeipd2Packet()
+        {
+            // RFC 9580 5.1.2: "A v6 PKESK packet MUST NOT precede a v1 SEIPD packet or a deprecated
+            // SED packet".
+            return Seipd2Packet
+                ?? throw new PgpException("a v6 PKESK packet must be followed by a v2 SEIPD packet");
+        }
+
         private byte[] RecoverSessionData(PgpPrivateKey privKey)
+        {
+            if (Rfc9580Utilities.IsNativeDiffieHellman(m_keyData.Algorithm))
+                return RecoverSessionDataNativeDH(privKey);
+
+            if (m_keyData.Algorithm != PublicKeyAlgorithmTag.ECDH)
+                return RecoverAsymmetricBlock(privKey);
+
+            return RecoverEcdhBlock(privKey);
+        }
+
+        /// <summary>
+        /// The session key alone, for a version 6 packet. RFC 9580 5.1.2: "No symmetric key
+        /// encryption algorithm identifier is passed to the public key algorithm for a v6 PKESK
+        /// packet, as it is included in the v2 SEIPD packet." Everything else is unchanged, so the
+        /// recovered block is the same one octet shorter -- and for X25519 and X448 it carries no
+        /// checksum either.
+        /// </summary>
+        private byte[] RecoverSessionKeyV6(PgpPrivateKey privKey)
+        {
+            if (Rfc9580Utilities.IsNativeDiffieHellman(m_keyData.Algorithm))
+                return UnwrapNativeDH(privKey, hasAlgorithmOctet: false, out _);
+
+            byte[] block = m_keyData.Algorithm != PublicKeyAlgorithmTag.ECDH
+                ? RecoverAsymmetricBlock(privKey)
+                : RecoverEcdhBlock(privKey);
+
+            // What is left is the session key and the two-octet checksum over it.
+            if (block.Length < 3)
+                throw new PgpException("encoded length out of range");
+
+            byte[] sessionKey = Arrays.CopyOfRange(block, 0, block.Length - 2);
+
+            int check = 0;
+            foreach (byte b in sessionKey)
+            {
+                check += b;
+            }
+
+            if (Pack.BE_To_UInt16(block, block.Length - 2) != (ushort)check)
+                throw new PgpKeyValidationException("key checksum failed");
+
+            return sessionKey;
+        }
+
+        private byte[] RecoverAsymmetricBlock(PgpPrivateKey privKey)
         {
             byte[][] secKeyData = m_keyData.GetEncSessionKey();
 
-            if (Rfc9580Utilities.IsNativeDiffieHellman(m_keyData.Algorithm))
-                return RecoverSessionDataNativeDH(privKey, secKeyData[0]);
+            IBufferedCipher cipher = GetKeyCipher(m_keyData.Algorithm);
 
-            if (m_keyData.Algorithm != PublicKeyAlgorithmTag.ECDH)
+            try
             {
-                IBufferedCipher cipher = GetKeyCipher(m_keyData.Algorithm);
-
-                try
-                {
-                    cipher.Init(forEncryption: false, privKey.Key);
-                }
-                catch (InvalidKeyException e)
-                {
-                    throw new PgpException("error setting asymmetric cipher", e);
-                }
-
-                if (m_keyData.Algorithm == PublicKeyAlgorithmTag.RsaEncrypt ||
-                    m_keyData.Algorithm == PublicKeyAlgorithmTag.RsaGeneral)
-                {
-                    byte[] bi = secKeyData[0];
-
-                    cipher.ProcessBytes(bi, 2, bi.Length - 2);
-                }
-                else
-                {
-                    ElGamalPrivateKeyParameters k = (ElGamalPrivateKeyParameters)privKey.Key;
-                    int size = (k.Parameters.P.BitLength + 7) / 8;
-
-                    ProcessEncodedMpi(cipher, size, secKeyData[0]);
-                    ProcessEncodedMpi(cipher, size, secKeyData[1]);
-                }
-
-                try
-                {
-                    return cipher.DoFinal();
-                }
-                catch (Exception e)
-                {
-                    throw new PgpException("exception decrypting secret key", e);
-                }
+                cipher.Init(forEncryption: false, privKey.Key);
             }
+            catch (InvalidKeyException e)
+            {
+                throw new PgpException("error setting asymmetric cipher", e);
+            }
+
+            if (m_keyData.Algorithm == PublicKeyAlgorithmTag.RsaEncrypt ||
+                m_keyData.Algorithm == PublicKeyAlgorithmTag.RsaGeneral)
+            {
+                byte[] bi = secKeyData[0];
+
+                cipher.ProcessBytes(bi, 2, bi.Length - 2);
+            }
+            else
+            {
+                ElGamalPrivateKeyParameters k = (ElGamalPrivateKeyParameters)privKey.Key;
+                int size = (k.Parameters.P.BitLength + 7) / 8;
+
+                ProcessEncodedMpi(cipher, size, secKeyData[0]);
+                ProcessEncodedMpi(cipher, size, secKeyData[1]);
+            }
+
+            try
+            {
+                return cipher.DoFinal();
+            }
+            catch (Exception e)
+            {
+                throw new PgpException("exception decrypting secret key", e);
+            }
+        }
+
+        private byte[] RecoverEcdhBlock(PgpPrivateKey privKey)
+        {
+            byte[][] secKeyData = m_keyData.GetEncSessionKey();
 
             ECDHPublicBcpgKey ecPubKey = (ECDHPublicBcpgKey)privKey.PublicKeyPacket.Key;
             byte[] enc = secKeyData[0];
@@ -246,24 +400,61 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
         /// rebuilt in the shape every other algorithm produces, so that the rest of this class does
         /// not have to know which one it was.
         /// </summary>
-        private byte[] RecoverSessionDataNativeDH(PgpPrivateKey privKey, byte[] enc)
+        private byte[] RecoverSessionDataNativeDH(PgpPrivateKey privKey)
         {
+            byte[] sessionKey = UnwrapNativeDH(privKey, hasAlgorithmOctet: true, out byte sessionKeyAlgorithm);
+
+            byte[] sessionData = new byte[1 + sessionKey.Length + 2];
+            sessionData[0] = sessionKeyAlgorithm;
+            Array.Copy(sessionKey, 0, sessionData, 1, sessionKey.Length);
+
+            int check = 0;
+            foreach (byte b in sessionKey)
+            {
+                check += b;
+            }
+
+            Pack.UInt16_To_BE((ushort)check, sessionData, sessionData.Length - 2);
+
+            return sessionData;
+        }
+
+        /// <summary>
+        /// Unwrap an X25519 or X448 session key. A version 3 packet puts the symmetric algorithm
+        /// identifier inside the fields the one-octet length covers, immediately before the wrapped
+        /// key; a version 6 packet leaves it out, so the length covers the wrapped key alone.
+        /// </summary>
+        private byte[] UnwrapNativeDH(PgpPrivateKey privKey, bool hasAlgorithmOctet,
+            out byte sessionKeyAlgorithm)
+        {
+            byte[] enc = m_keyData.GetEncSessionKey()[0];
+
             var algorithm = m_keyData.Algorithm;
             int publicKeyLength = Rfc9580Utilities.PublicKeyLength(algorithm);
 
-            // The ephemeral public key, a one-octet length, and the fields that length covers: the
-            // algorithm identifier and the wrapped key.
+            // The ephemeral public key, a one-octet length, and the fields that length covers.
             if (enc.Length < publicKeyLength + 2)
                 throw new PgpException("encoded length out of range");
 
             int fieldsLength = enc[publicKeyLength];
-            if (fieldsLength < 2 || publicKeyLength + 1 + fieldsLength > enc.Length)
+            int minimumFieldsLength = hasAlgorithmOctet ? 2 : 1;
+            if (fieldsLength < minimumFieldsLength || publicKeyLength + 1 + fieldsLength > enc.Length)
                 throw new PgpException("encoded length out of range");
 
             byte[] ephemeralPublicKey = Arrays.CopyOfRange(enc, 0, publicKeyLength);
-            byte sessionKeyAlgorithm = enc[publicKeyLength + 1];
-            byte[] wrapped = Arrays.CopyOfRange(enc, publicKeyLength + 2,
-                publicKeyLength + 1 + fieldsLength);
+
+            int wrappedOffset = publicKeyLength + 1;
+            if (hasAlgorithmOctet)
+            {
+                sessionKeyAlgorithm = enc[wrappedOffset];
+                wrappedOffset++;
+            }
+            else
+            {
+                sessionKeyAlgorithm = 0;
+            }
+
+            byte[] wrapped = Arrays.CopyOfRange(enc, wrappedOffset, publicKeyLength + 1 + fieldsLength);
 
             byte[] recipientPublicKey, secret;
 
@@ -300,21 +491,7 @@ namespace Org.BouncyCastle.Bcpg.OpenPgp
             IWrapper wrapper = PgpUtilities.CreateWrapper(Rfc9580Utilities.KeyWrapAlgorithm(algorithm));
             wrapper.Init(forWrapping: false, key);
 
-            byte[] sessionKey = wrapper.Unwrap(wrapped, 0, wrapped.Length);
-
-            byte[] sessionData = new byte[1 + sessionKey.Length + 2];
-            sessionData[0] = sessionKeyAlgorithm;
-            Array.Copy(sessionKey, 0, sessionData, 1, sessionKey.Length);
-
-            int check = 0;
-            foreach (byte b in sessionKey)
-            {
-                check += b;
-            }
-
-            Pack.UInt16_To_BE((ushort)check, sessionData, sessionData.Length - 2);
-
-            return sessionData;
+            return wrapper.Unwrap(wrapped, 0, wrapped.Length);
         }
 
         private static bool ConfirmCheckSum(byte[] sessionInfo)
