@@ -3,13 +3,18 @@ using System.IO;
 
 using NUnit.Framework;
 
+using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Cms;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
+using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto.Signers;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Security;
+using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Test;
 using Org.BouncyCastle.X509;
 
@@ -294,57 +299,62 @@ namespace Org.BouncyCastle.OpenSsl.Tests
                 }
             }
 
-            //using (var pemRd = OpenPemResource("trusted_cert.pem"))
-            //{
-            //    X509TrustedCertificateBlock trusted = (X509TrustedCertificateBlock)pemRd.ReadObject();
+            using (var pemRd = OpenPemResource("trusted_cert.pem"))
+            {
+                X509TrustedCertificateBlock trusted = (X509TrustedCertificateBlock)pemRd.ReadObject();
 
-            //    checkTrustedCert(trusted);
+                CheckTrustedCert(trusted);
 
-            //    StringWriter stringWriter = new StringWriter();
+                MemoryStream trustedBuf = new MemoryStream();
+                using (var trustedWriter = new PemWriter(new StreamWriter(trustedBuf)))
+                {
+                    trustedWriter.WriteObject(trusted);
+                }
 
-            //    pWrt = new JcaPEMWriter(stringWriter);
+                var trustedEncoding = trustedBuf.ToArray();
 
-            //    pWrt.writeObject(trusted);
+                using (var trustedReader = new PemReader(new StreamReader(new MemoryStream(trustedEncoding, false))))
+                {
+                    trusted = (X509TrustedCertificateBlock)trustedReader.ReadObject();
+                }
 
-            //    pWrt.close();
-
-            //    pemRd = new PEMParser(new StringReader(stringWriter.toString()));
-
-            //    trusted = (X509TrustedCertificateBlock)pemRd.readObject();
-
-            //    checkTrustedCert(trusted);
-            //}
+                CheckTrustedCert(trusted);
+            }
 
             //
             // EdDSAKey
             //
-            //using (var pemRd = OpenPemResource("eddsapriv.pem"))
-            //{
-            //    byte[] msg = Strings.toByteArray("Hello, world!");
+            using (var pemRd = OpenPemResource("eddsapriv.pem"))
+            {
+                Ed25519PrivateKeyParameters edPrivKey = (Ed25519PrivateKeyParameters)pemRd.ReadObject();
+                Ed25519PublicKeyParameters edPubKey = edPrivKey.GeneratePublicKey();
 
-            //    PrivateKeyInfo edPrivInfo = (PrivateKeyInfo)pemRd.readObject();
+                byte[] msg = Strings.ToByteArray("Hello, world!");
 
-            //    EdDSAPrivateKey edPrivKey = (EdDSAPrivateKey)new JcaPEMKeyConverter().setProvider("BC").getPrivateKey(edPrivInfo);
+                Ed25519Signer edSig = new Ed25519Signer();
+                edSig.Init(forSigning: true, edPrivKey);
+                edSig.BlockUpdate(msg, 0, msg.Length);
+                byte[] s = edSig.GenerateSignature();
 
-            //    EdDSAPublicKey edPubKey = edPrivKey.getPublicKey();
+                edSig.Init(forSigning: false, edPubKey);
+                edSig.BlockUpdate(msg, 0, msg.Length);
+                Assert.True(edSig.VerifySignature(s));
+            }
 
-            //    Signature edSig = Signature.getInstance(edPrivKey.getAlgorithm(), "BC");
-
-            //    edSig.initSign(edPrivKey);
-
-            //    edSig.update(msg);
-
-            //    byte[] s = edSig.sign();
-
-            //    edSig.initVerify(edPubKey);
-
-            //    edSig.update(msg);
-
-            //    isTrue(edSig.verify(s));
-            //}
-
-            //ImplOpenSslGost2012Test();
+            ImplOpenSslGost2012Test();
             //ImplParseAttrECKeyTest();
+        }
+
+        private void CheckTrustedCert(X509TrustedCertificateBlock trusted)
+        {
+            CertificateTrustBlock trustBlock = trusted.TrustBlock;
+
+            Assert.AreEqual("Fred", trustBlock.GetAlias(), "alias not found");
+            Assert.AreEqual(3, trustBlock.GetUses().Count, "key purpose usages wrong size");
+            Assert.That(trustBlock.GetUses().Contains(KeyPurposeID.id_kp_OCSPSigning), "key purpose use not found");
+            Assert.AreEqual(1, trustBlock.GetProhibitions().Count, "key purpose prohibitions wrong size");
+            Assert.That(trustBlock.GetProhibitions().Contains(KeyPurposeID.id_kp_clientAuth),
+                "key purpose prohibition not found");
         }
 
         private void ImplKeyPairTest(string name, AsymmetricCipherKeyPair pair)
@@ -413,34 +423,41 @@ namespace Org.BouncyCastle.OpenSsl.Tests
             ImplOpenSslTestFile(fileName, typeof(DsaPrivateKeyParameters));
         }
 
-        //private void ImplOpenSslGost2012Test()
-        //{
-        //    try
-        //    {
-        //        KeyFactory.getInstance("ECGOST3410-2012", "BC"); // check for algorithm
-        //    }
-        //    catch (Exception e)
-        //    {
-        //        return;
-        //    }
+        private void ImplOpenSslGost2012Test()
+        {
+            // check for algorithm
+            Assert.NotNull(GeneratorUtilities.GetKeyPairGenerator("ECGOST3410-2012"));
 
-        //    String fileName = "gost2012_priv.pem";
+            //string privFile = "data/gost2012_priv.pem";
+            string privFile = "gost2012_priv.pem";
 
-        //    PEMParser pr = openPEMResource("data/" + fileName);
-        //    PKCS8EncryptedPrivateKeyInfo pInfo = (PKCS8EncryptedPrivateKeyInfo)pr.readObject();
+            ECPrivateKeyParameters privKey;
+            using (var privReader = OpenPemResource(privFile, new TestPassword("test")))
+            {
+                privKey = (ECPrivateKeyParameters)privReader.ReadObject();
+            }
 
-        //    InputDecryptorProvider pkcs8Prov = new JceOpenSSLPKCS8DecryptorProviderBuilder().setProvider("BC").build("test".toCharArray());
+            //string certFile = "data/gost2012_cert.pem";
+            string certFile = "gost2012_cert.pem";
 
-        //    KeyFactory keyFact = KeyFactory.getInstance("ECGOST3410-2012", "BC");
+            X509Certificate cert;
+            ECPublicKeyParameters pubKey;
+            using (var certReader = OpenPemResource(certFile))
+            {
+                cert = (X509Certificate)certReader.ReadObject();
+                pubKey = (ECPublicKeyParameters)cert.GetPublicKey();
 
-        //    PrivateKey privKey = keyFact.generatePrivate(new PKCS8EncodedKeySpec(pInfo.decryptPrivateKeyInfo(pkcs8Prov).getEncoded()));
+                cert.Verify(pubKey);
+            }
 
-        //    pr = openPEMResource("data/gost2012_cert.pem");
-        //    X509Certificate cert = (X509Certificate)CertificateFactory.getInstance("X.509", "BC").generateCertificate(
-        //        new ByteArrayInputStream(((X509CertificateHolder)pr.readObject()).getEncoded()));
+            // Confirm interop of private and public keys
+            var signatureFactory = new Asn1SignatureFactory(cert.SignatureAlgorithm, privKey);
+            DerBitString signature = X509.X509Utilities.GenerateSignature(signatureFactory, cert.TbsCertificate);
 
-        //    cert.verify(cert.getPublicKey());
-        //}
+            var verifierFactory = new Asn1VerifierFactoryProvider(pubKey).CreateVerifierFactory(cert.SignatureAlgorithm);
+            bool shouldVerify = X509.X509Utilities.VerifySignature(verifierFactory, cert.TbsCertificate, signature);
+            Assert.True(shouldVerify);
+        }
 
         private void ImplOpenSslRsaTest(string name)
         {

@@ -44,6 +44,12 @@ namespace Org.BouncyCastle.Tls
         /// Echoing it makes <see cref="GetCertificateStatus"/> be called with
         /// <see cref="SecurityParameters.StatusRequestVersion"/> of 1; it does not oblige the server to actually supply
         /// a response.
+        /// <para>
+        /// This governs (D)TLS 1.2 and earlier, where the echo is what announces the "certificate_status" message. TLS
+        /// 1.3 has no echo to send - the response rides in a per-<see cref="CertificateEntry"/> extension - so there
+        /// <see cref="GetCertificateStatus"/> is called whenever the client offered "status_request", whatever this
+        /// returns, and returning null from it is how a TLS 1.3 server declines to staple.
+        /// </para>
         /// </remarks>
         /// <returns><c>true</c> (the default) to echo "status_request" when the client offered it.</returns>
         protected virtual bool AllowCertificateStatus() => true;
@@ -284,6 +290,8 @@ namespace Org.BouncyCastle.Tls
             m_truncatedHMacOffered = false;
             m_clientSentECPointFormats = false;
             m_certificateStatusRequest = null;
+            m_statusRequestV2 = null;
+            m_trustedCAKeys = null;
             m_selectedCipherSuite = -1;
             m_selectedProtocolName = null;
             m_serverExtensions.Clear();
@@ -458,14 +466,12 @@ namespace Org.BouncyCastle.Tls
 
             if (isTlsV13)
             {
-                if (null != m_certificateStatusRequest && AllowCertificateStatus())
-                {
-                    /*
-                     * TODO[tls13] RFC 8446 4.4.2.1. OCSP Status and SCT Extensions.
-                     * 
-                     * OCSP information is carried in an extension for a CertificateEntry.
-                     */
-                }
+                /*
+                 * RFC 8446 4.4.2.1. There is no "status_request" echo to add here: the response travels in a
+                 * "status_request" extension of the CertificateEntry containing the certificate it answers for, which
+                 * TlsServerProtocol attaches from GetCertificateStatus(). Nor is "status_request_v2" honoured - RFC
+                 * 8446 sec. 4.2.1 leaves it out of TLS 1.3.
+                 */
             }
             else
             {
@@ -499,7 +505,6 @@ namespace Org.BouncyCastle.Tls
                         new short[]{ ECPointFormat.uncompressed });
                 }
 
-                // TODO[tls13] See RFC 8446 4.4.2.1
                 if (null != m_statusRequestV2 && AllowMultiCertStatus())
                 {
                     /*

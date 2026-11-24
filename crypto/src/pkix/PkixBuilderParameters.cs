@@ -39,13 +39,26 @@ namespace Org.BouncyCastle.Pkix
         }
 
         public PkixBuilderParameters(ISet<TrustAnchor> trustAnchors, ISelector<X509Certificate> targetConstraintsCert)
-            : this(trustAnchors, targetConstraintsCert, null)
+            : this(trustAnchors, targetConstraintsCert, targetConstraintsAttrCert: null)
         {
         }
 
         public PkixBuilderParameters(ISet<TrustAnchor> trustAnchors, ISelector<X509Certificate> targetConstraintsCert,
             ISelector<X509V2AttributeCertificate> targetConstraintsAttrCert)
             : base(trustAnchors)
+        {
+            SetTargetConstraintsCert(targetConstraintsCert);
+            SetTargetConstraintsAttrCert(targetConstraintsAttrCert);
+        }
+
+        public PkixBuilderParameters(TrustAnchor trustAnchor, ISelector<X509Certificate> targetConstraintsCert)
+            : this(trustAnchor, targetConstraintsCert, targetConstraintsAttrCert: null)
+        {
+        }
+
+        public PkixBuilderParameters(TrustAnchor trustAnchor, ISelector<X509Certificate> targetConstraintsCert,
+            ISelector<X509V2AttributeCertificate> targetConstraintsAttrCert)
+            : base(trustAnchor)
         {
             SetTargetConstraintsCert(targetConstraintsCert);
             SetTargetConstraintsAttrCert(targetConstraintsAttrCert);
@@ -68,6 +81,16 @@ namespace Org.BouncyCastle.Pkix
         /// </summary>
         /// <returns>the excluded certificates.</returns>
         public virtual ISet<X509Certificate> GetExcludedCerts() => new HashSet<X509Certificate>(excludedCerts);
+
+        /// <summary>
+        /// Return whether the given certificate is one of the excluded certificates, which are not used for
+        /// building a certification path.
+        /// </summary>
+        /// <remarks>
+        /// Equivalent to testing <see cref="GetExcludedCerts"/> for membership, but without copying the set.
+        /// </remarks>
+        /// <param name="cert">The certificate to test.</param>
+        public virtual bool IsExcludedCert(X509Certificate cert) => excludedCerts.Contains(cert);
 
         /// <summary>
         /// Sets the excluded certificates which are not used for building a
@@ -93,7 +116,7 @@ namespace Org.BouncyCastle.Pkix
         /**
          * Can alse handle <code>ExtendedPKIXBuilderParameters</code> and
          * <code>PKIXBuilderParameters</code>.
-         * 
+         *
          * @param params Parameters to set.
          * @see Org.BouncyCastle.X509.ExtendedPKIXParameters#setParams(java.security.cert.PKIXParameters)
          */

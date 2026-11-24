@@ -9,7 +9,7 @@ using Org.BouncyCastle.Utilities;
 namespace Org.BouncyCastle.Crypto.Agreement
 {
     /// <summary>
-    /// GOST VKO key agreement class - RFC 7836 Section 4.3 
+    /// GOST VKO key agreement class - RFC 7836 Section 4.3
     /// </summary>
     public sealed class ECVkoAgreement
         : IRawAgreement
@@ -31,7 +31,9 @@ namespace Org.BouncyCastle.Crypto.Agreement
             if (!(parameters is ParametersWithUkm paramsWithUkm))
                 throw new ArgumentException($"{nameof(ECVkoAgreement)} expects {nameof(ParametersWithUkm)}");
 
-            if (!(paramsWithUkm.Parameters is ECPrivateKeyParameters ecParams))
+            var kParam = ParameterUtilities.IgnoreRandom(paramsWithUkm.Parameters);
+
+            if (!(kParam is ECPrivateKeyParameters ecParams))
                 throw new ArgumentException($"{nameof(ECVkoAgreement)} expects {nameof(ECPrivateKeyParameters)}");
 
             m_key = ecParams;
@@ -75,8 +77,7 @@ namespace Org.BouncyCastle.Crypto.Agreement
             if (pubPoint.IsInfinity)
                 throw new InvalidOperationException("Infinity is not a valid public key for ECVKO");
 
-            ECPoint p = pubPoint.Multiply(hd).Normalize();
-
+            ECPoint p = ECAlgorithms.MultiplySecret(pubPoint, hd).Normalize();
             if (p.IsInfinity)
                 throw new InvalidOperationException("Infinity is not a valid agreement value for ECVKO");
 

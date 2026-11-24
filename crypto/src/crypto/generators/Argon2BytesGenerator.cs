@@ -91,14 +91,12 @@ namespace Org.BouncyCastle.Crypto.Generators
             this.parameters = parameters;
 
             // 2. Align memory size
-            // Minimum memoryBlocks = 8L blocks, where L is the number of lanes
-            int memoryBlocks = System.Math.Max(parameters.Memory, 2 * Argon2SyncPoints * parameters.Parallelism);
+            int lanes = parameters.Parallelism;
 
-            this.segmentLength = memoryBlocks / (Argon2SyncPoints * parameters.Parallelism);
+            this.segmentLength = GetSegmentLength(parameters.Memory, lanes);
             this.laneLength = segmentLength * Argon2SyncPoints;
 
-            // Ensure that all segments have equal length
-            memoryBlocks = parameters.Parallelism * laneLength;
+            int memoryBlocks = lanes * laneLength;
 
             this.memory = new Block[memoryBlocks];
 
@@ -107,6 +105,11 @@ namespace Org.BouncyCastle.Crypto.Generators
                 memory[i] = new Block();
             }
         }
+
+        // Minimum memory is 8L blocks, where L is the number of lanes, and the segments of every lane
+        // are of equal length, so the memory actually used is a multiple of ARGON2_SYNC_POINTS * lanes.
+        private static int GetSegmentLength(int memory, int lanes) =>
+            System.Math.Max(memory, 2 * Argon2SyncPoints * lanes) / (Argon2SyncPoints * lanes);
 
         public int GenerateBytes(char[] password, byte[] output) =>
             GenerateBytes(parameters.CharToByteConverter.Convert(password), output);
@@ -123,11 +126,17 @@ namespace Org.BouncyCastle.Crypto.Generators
 
             byte[] tmpBlockBytes = new byte[Argon2BlockSize];
 
-            Initialize(tmpBlockBytes, password, outLen);
-            FillMemoryBlocks();
-            Digest(tmpBlockBytes, output, outOff, outLen);
-
-            Reset();
+            try
+            {
+                Initialize(tmpBlockBytes, password, outLen);
+                FillMemoryBlocks();
+                Digest(tmpBlockBytes, output, outOff, outLen);
+            }
+            finally
+            {
+                Arrays.ZeroMemory(tmpBlockBytes);
+                Reset();
+            }
 
             return outLen;
         }
@@ -437,15 +446,16 @@ namespace Org.BouncyCastle.Crypto.Generators
                 int halfLen = blake2bLength / 2, outPos = outOff;
 
                 IDigest digest = new Blake2bDigest(blake2bLength * 8);
-                byte[] outBuffer = new byte[blake2bLength];
 
                 /* V1 */
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                Span<byte> outSpan = stackalloc byte[blake2bLength];
                 digest.BlockUpdate(outLenBytes);
                 digest.BlockUpdate(input);
-                digest.DoFinal(outBuffer);
-                outBuffer[0..halfLen].CopyTo(output);
+                digest.DoFinal(outSpan);
+                outSpan[..halfLen].CopyTo(output);
 #else
+                byte[] outBuffer = new byte[blake2bLength];
                 digest.BlockUpdate(outLenBytes, 0, outLenBytes.Length);
                 digest.BlockUpdate(input, 0, input.Length);
                 digest.DoFinal(outBuffer, 0);
@@ -458,12 +468,13 @@ namespace Org.BouncyCastle.Crypto.Generators
                 for (int i = 2; i <= r; i++, outPos += halfLen)
                 {
                     /* V2 to Vr */
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                    digest.BlockUpdate(outSpan);
+                    digest.DoFinal(outSpan);
+                    outSpan[..halfLen].CopyTo(output[outPos..]);
+#else
                     digest.BlockUpdate(outBuffer, 0, outBuffer.Length);
                     digest.DoFinal(outBuffer, 0);
-
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                    outBuffer[0..halfLen].CopyTo(output[outPos..]);
-#else
                     Array.Copy(outBuffer, 0, output, outPos, halfLen);
 #endif
                 }
@@ -473,11 +484,11 @@ namespace Org.BouncyCastle.Crypto.Generators
                 /* Vr+1 */
                 digest = new Blake2bDigest(lastLength * 8);
 
-                digest.BlockUpdate(outBuffer, 0, outBuffer.Length);
-
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                digest.BlockUpdate(outSpan);
                 digest.DoFinal(output[outPos..]);
 #else
+                digest.BlockUpdate(outBuffer, 0, outBuffer.Length);
                 digest.DoFinal(output, outPos);
 #endif
             }

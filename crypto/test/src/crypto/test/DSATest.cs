@@ -2,15 +2,12 @@ using System;
 
 using NUnit.Framework;
 
-using Org.BouncyCastle.Math;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Digests;
-using Org.BouncyCastle.Crypto.Signers;
-using Org.BouncyCastle.Crypto.Engines;
-using Org.BouncyCastle.Crypto.Encodings;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto.Signers;
+using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Encoders;
 using Org.BouncyCastle.Utilities.Test;
@@ -20,17 +17,12 @@ namespace Org.BouncyCastle.Crypto.Tests
     /// <summary>Test based on FIPS 186-2, Appendix 5, an example of DSA, and FIPS 168-3 test vectors.</summary>
     [TestFixture]
     public class DsaTest
-        : SimpleTest
     {
-        public override string Name
-        {
-            get { return "DSA"; }
-        }
-
         internal BigInteger pValue = new BigInteger("8df2a494492276aa3d25759bb06869cbeac0d83afb8d0cf7cbb8324f0d7882e5d0762fc5b7210eafc2e9adac32ab7aac49693dfbf83724c2ec0736ee31c80291", 16);
         internal BigInteger qValue = new BigInteger("c773218c737ec8ee993b4f2ded30f48edace915f", 16);
 
-        public override void PerformTest()
+        [Test]
+        public void Basic()
         {
             byte[] k1 = Hex.Decode("d5014e4b60ef2ba8b6211b4062ba3224e0427dd3");
             byte[] k2 = Hex.Decode("345e8d05c075c3a508df729a1685690e68fcfb8c8117847e89063bca1f85d968fd281540b6e13bd1af989a1fbf17e06462bf511f9d0b140fb48ac1b1baa5bded");
@@ -52,12 +44,12 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (pValid.Counter != 105)
             {
-                Fail("Counter wrong");
+                Assert.Fail("Counter wrong");
             }
 
             if (!pValue.Equals(parameters.P) || !qValue.Equals(parameters.Q))
             {
-                Fail("p or q wrong");
+                Assert.Fail("p or q wrong");
             }
 
             DsaKeyPairGenerator dsaKeyGen = new DsaKeyPairGenerator();
@@ -78,14 +70,14 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!r.Equals(sig[0]))
             {
-                Fail("r component wrong." + SimpleTest.NewLine
+                Assert.Fail("r component wrong." + SimpleTest.NewLine
                     + " expecting: " + r + SimpleTest.NewLine
                     + " got      : " + sig[0]);
             }
 
             if (!s.Equals(sig[1]))
             {
-                Fail("s component wrong." + SimpleTest.NewLine
+                Assert.Fail("s component wrong." + SimpleTest.NewLine
                     + " expecting: " + s + SimpleTest.NewLine
                     + " got      : " + sig[1]);
             }
@@ -94,16 +86,12 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!dsa.VerifySignature(message, sig[0], sig[1]))
             {
-                Fail("verification fails");
+                Assert.Fail("verification fails");
             }
-
-            Dsa2Test1();
-            Dsa2Test2();
-            Dsa2Test3();
-            Dsa2Test4();
         }
 
-        private void Dsa2Test1()
+        [Test]
+        public void Dsa2Test1()
         {
             byte[] seed = Hex.Decode("ED8BEE8D1CB89229D2903CBF0E51EE7377F48698");
 
@@ -115,20 +103,11 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             DsaValidationParameters pv = parameters.ValidationParameters;
 
-            if (pv.Counter != 5)
-            {
-                Fail("counter incorrect");
-            }
+            Assert.AreEqual(5, pv.Counter, "counter incorrect");
 
-            if (!AreEqual(seed, pv.GetSeed()))
-            {
-                Fail("seed incorrect");
-            }
+            Assert.That(Arrays.AreEqual(seed, pv.GetSeed()), "seed incorrect");
 
-            if (!parameters.Q.Equals(new BigInteger("E950511EAB424B9A19A2AEB4E159B7844C589C4F", 16)))
-            {
-                Fail("Q incorrect");
-            }
+            Assert.AreEqual(new BigInteger("E950511EAB424B9A19A2AEB4E159B7844C589C4F", 16), parameters.Q, "Q incorrect");
 
             if (!parameters.P.Equals(new BigInteger(
                 "E0A67598CD1B763B" +
@@ -138,7 +117,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "C4A7CF0235B5316BFC6EFB9A248411258B30B839AF172440" +
                 "F32563056CB67A861158DDD90E6A894C72A5BBEF9E286C6B", 16)))
             {
-                Fail("P incorrect");
+                Assert.Fail("P incorrect");
             }
 
             if (!parameters.G.Equals(new BigInteger(
@@ -149,7 +128,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "76A055FFE2770988FE2EC2DE11AD92219F0B351869AC24DA" +
                 "3D7BA87011A701CE8EE7BFE49486ED4527B7186CA4610A75", 16)))
             {
-                Fail("G incorrect");
+                Assert.Fail("G incorrect");
             }
 
             DsaKeyPairGenerator kpGen = new DsaKeyPairGenerator();
@@ -169,17 +148,13 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "9E1B9D6D3C940301F4E978D65B19041FCF1E8B518F5C0576" +
                 "C770FE5A7A485D8329EE2914A2DE1B5DA4A6128CEAB70F79", 16)))
             {
-                Fail("Y value incorrect");
+                Assert.Fail("Y value incorrect");
             }
 
-            if (!priv.X.Equals(
-                new BigInteger("D0EC4E50BB290A42E9E355C73D8809345DE2E139", 16)))
-            {
-                Fail("X value incorrect");
-            }
+            Assert.AreEqual(new BigInteger("D0EC4E50BB290A42E9E355C73D8809345DE2E139", 16), priv.X,
+                "X value incorrect");
 
             DsaSigner signer = new DsaSigner();
-
             signer.Init(true, new ParametersWithRandom(kp.Private, FixedSecureRandom.From(Hex.Decode("349C55648DCF992F3F33E8026CFAC87C1D2BA075"))));
 
             byte[] msg = Hex.Decode("A9993E364706816ABA3E25717850C26C9CD0D89D");
@@ -188,24 +163,24 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!sig[0].Equals(new BigInteger("636155AC9A4633B4665D179F9E4117DF68601F34", 16)))
             {
-                Fail("R value incorrect");
+                Assert.Fail("R value incorrect");
             }
 
             if (!sig[1].Equals(new BigInteger("6C540B02D9D4852F89DF8CFC99963204F4347704", 16)))
             {
-                Fail("S value incorrect");
+                Assert.Fail("S value incorrect");
             }
 
             signer.Init(false, kp.Public);
 
             if (!signer.VerifySignature(msg, sig[0], sig[1]))
             {
-                Fail("signature not verified");
+                Assert.Fail("signature not verified");
             }
-
         }
 
-        private void Dsa2Test2()
+        [Test]
+        public void Dsa2Test2()
         {
             byte[] seed = Hex.Decode("5AFCC1EFFC079A9CCA6ECA86D6E3CC3B18642D9BE1CC6207C84002A9");
 
@@ -217,20 +192,12 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             DsaValidationParameters pv = parameters.ValidationParameters;
 
-            if (pv.Counter != 21)
-            {
-                Fail("counter incorrect");
-            }
+            Assert.AreEqual(21, pv.Counter, "counter incorrect");
 
-            if (!AreEqual(seed, pv.GetSeed()))
-            {
-                Fail("seed incorrect");
-            }
+            Assert.That(Arrays.AreEqual(seed, pv.GetSeed()), "seed incorrect");
 
-            if (!parameters.Q.Equals(new BigInteger("90EAF4D1AF0708B1B612FF35E0A2997EB9E9D263C9CE659528945C0D", 16)))
-            {
-                Fail("Q incorrect");
-            }
+            Assert.AreEqual(new BigInteger("90EAF4D1AF0708B1B612FF35E0A2997EB9E9D263C9CE659528945C0D", 16),
+                parameters.Q, "Q incorrect");
 
             if (!parameters.P.Equals(new BigInteger(
                 "C196BA05AC29E1F9C3C72D56DFFC6154" +
@@ -245,7 +212,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "E8AB275D7D75651CEFED65F78AFC3EA7FE4D79B35F62A040" +
                 "2A1117599ADAC7B269A59F353CF450E6982D3B1702D9CA83", 16)))
             {
-                Fail("P incorrect");
+                Assert.Fail("P incorrect");
             }
 
             if (!parameters.G.Equals(new BigInteger(
@@ -261,7 +228,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "7B692BBBCDA2FB23A516C5B4533D73980B2A3B60E384ED20"+
                 "0AE21B40D273651AD6060C13D97FD69AA13C5611A51B9085", 16)))
             {
-                Fail("G incorrect");
+                Assert.Fail("G incorrect");
             }
 
             DsaKeyPairGenerator kpGen = new DsaKeyPairGenerator();
@@ -287,13 +254,13 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "90E47347AD1183509FED6FCF198BA9A71AB3335B4F38BE8D" +
                 "15496A00B6DC2263E20A5F6B662320A3A1EC033AA61E3B68", 16)))
             {
-                Fail("Y value incorrect");
+                Assert.Fail("Y value incorrect");
             }
 
             if (!priv.X.Equals(
                 new BigInteger("00D0F09ED3E2568F6CADF9224117DA2AEC5A4300E009DE1366023E17", 16)))
             {
-                Fail("X value incorrect");
+                Assert.Fail("X value incorrect");
             }
 
             DsaSigner signer = new DsaSigner();
@@ -307,23 +274,22 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!sig[0].Equals(new BigInteger("4400138D05F9639CAF54A583CAAF25D2B76D0C3EAD752CE17DBC85FE", 16)))
             {
-                Fail("R value incorrect");
+                Assert.Fail("R value incorrect");
             }
 
             if (!sig[1].Equals(new BigInteger("874D4F12CB13B61732D398445698CFA9D92381D938AA57EE2C9327B3", 16)))
             {
-                Fail("S value incorrect");
+                Assert.Fail("S value incorrect");
             }
 
             signer.Init(false, kp.Public);
-
-            if (!signer.VerifySignature(msg, sig[0], sig[1]))
-            {
-                Fail("signature not verified");
-            }
+            bool shouldVerify = signer.VerifySignature(msg, sig[0], sig[1]);
+            Assert.True(shouldVerify, "signature not verified");
         }
 
-        private void Dsa2Test3()
+        [Test]
+
+        public void Dsa2Test3()
         {
             byte[] seed = Hex.Decode("4783081972865EA95D43318AB2EAF9C61A2FC7BBF1B772A09017BDF5A58F4FF0");
 
@@ -335,20 +301,12 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             DsaValidationParameters pv = parameters.ValidationParameters;
 
-            if (pv.Counter != 12)
-            {
-                Fail("counter incorrect");
-            }
+            Assert.AreEqual(12, pv.Counter, "counter incorrect");
 
-            if (!AreEqual(seed, pv.GetSeed()))
-            {
-                Fail("seed incorrect");
-            }
+            Assert.That(Arrays.AreEqual(seed, pv.GetSeed()), "seed incorrect");
 
-            if (!parameters.Q.Equals(new BigInteger("C24ED361870B61E0D367F008F99F8A1F75525889C89DB1B673C45AF5867CB467", 16)))
-            {
-                Fail("Q incorrect");
-            }
+            Assert.AreEqual(new BigInteger("C24ED361870B61E0D367F008F99F8A1F75525889C89DB1B673C45AF5867CB467", 16),
+                parameters.Q, "Q incorrect");
 
             if (!parameters.P.Equals(new BigInteger(
                 "F56C2A7D366E3EBDEAA1891FD2A0D099" +
@@ -363,7 +321,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "1CF1399A4D679D92FDE7D941C5C85C5D7BFF91BA69F9489D" +
                 "531D1EBFA727CFDA651390F8021719FA9F7216CEB177BD75", 16)))
             {
-                Fail("P incorrect");
+                Assert.Fail("P incorrect");
             }
 
             if (!parameters.G.Equals(new BigInteger(
@@ -379,7 +337,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "428BB096C6D67A76EC0B8D4EF274B8A2CF556D279AD267CC" +
                 "EF5AF477AFED029F485B5597739F5D0240F67C2D948A6279", 16)))
             {
-                Fail("G incorrect");
+                Assert.Fail("G incorrect");
             }
 
             DsaKeyPairGenerator kpGen = new DsaKeyPairGenerator();
@@ -405,13 +363,13 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "C97B63CE1355257627C8B0FD840DDB20ED35BE92F08C49AE" +
                 "A5613957D7E5C7A6D5A5834B4CB069E0831753ECF65BA02B", 16)))
             {
-                Fail("Y value incorrect");
+                Assert.Fail("Y value incorrect");
             }
 
             if (!priv.X.Equals(
                 new BigInteger("0CAF2EF547EC49C4F3A6FE6DF4223A174D01F2C115D49A6F73437C29A2A8458C", 16)))
             {
-                Fail("X value incorrect");
+                Assert.Fail("X value incorrect");
             }
 
             DsaSigner signer = new DsaSigner();
@@ -425,23 +383,21 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!sig[0].Equals(new BigInteger("315C875DCD4850E948B8AC42824E9483A32D5BA5ABE0681B9B9448D444F2BE3C", 16)))
             {
-                Fail("R value incorrect");
+                Assert.Fail("R value incorrect");
             }
 
             if (!sig[1].Equals(new BigInteger("89718D12E54A8D9ED066E4A55F7ED5A2229CD23B9A3CEE78F83ED6AA61F6BCB9", 16)))
             {
-                Fail("S value incorrect");
+                Assert.Fail("S value incorrect");
             }
 
             signer.Init(false, kp.Public);
-
-            if (!signer.VerifySignature(msg, sig[0], sig[1]))
-            {
-                Fail("signature not verified");
-            }
+            bool shouldVerify = signer.VerifySignature(msg, sig[0], sig[1]);
+            Assert.True(shouldVerify, "signature not verified");
         }
 
-        private void Dsa2Test4()
+        [Test]
+        public void Dsa2Test4()
         {
             byte[] seed = Hex.Decode("193AFCA7C1E77B3C1ECC618C81322E47B8B8B997C9C83515C59CC446C2D9BD47");
 
@@ -453,20 +409,12 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             DsaValidationParameters pv = parameters.ValidationParameters;
 
-            if (pv.Counter != 20)
-            {
-                Fail("counter incorrect");
-            }
+            Assert.AreEqual(20, pv.Counter, "counter incorrect");
 
-            if (!AreEqual(seed, pv.GetSeed()))
-            {
-                Fail("seed incorrect");
-            }
+            Assert.That(Arrays.AreEqual(seed, pv.GetSeed()), "seed incorrect");
 
-            if (!parameters.Q.Equals(new BigInteger("CFA0478A54717B08CE64805B76E5B14249A77A4838469DF7F7DC987EFCCFB11D", 16)))
-            {
-                Fail("Q incorrect");
-            }
+            Assert.AreEqual(new BigInteger("CFA0478A54717B08CE64805B76E5B14249A77A4838469DF7F7DC987EFCCFB11D", 16),
+                parameters.Q, "Q incorrect");
 
             if (!parameters.P.Equals(new BigInteger(
                 "90066455B5CFC38F9CAA4A48B4281F292C260FEEF01FD610" +
@@ -486,7 +434,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "0D15C3F3E3FC0A8335617055AC91328EC22B50FC15B941D3" +
                 "D1624CD88BC25F3E941FDDC6200689581BFEC416B4B2CB73", 16)))
             {
-                Fail("P incorrect");
+                Assert.Fail("P incorrect");
             }
 
             if (!parameters.G.Equals(new BigInteger(
@@ -507,7 +455,7 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "74C1D2C2A7AFB6A29799620F00E11C33787F7DED3B30E1A2" +
                 "2D09F1FBDA1ABBBFBF25CAE05A13F812E34563F99410E73B", 16)))
             {
-                Fail("G incorrect");
+                Assert.Fail("G incorrect");
             }
 
             DsaKeyPairGenerator kpGen = new DsaKeyPairGenerator();
@@ -538,13 +486,13 @@ namespace Org.BouncyCastle.Crypto.Tests
                 "008985A821CD2D978C7E6FE7499D1AAF8DE632C21BB48CA5" +
                 "CBF9F31098FD3FD3854C49A65D9201744AACE540354974F9", 16)))
             {
-                Fail("Y value incorrect");
+                Assert.Fail("Y value incorrect");
             }
 
             if (!priv.X.Equals(
                 new BigInteger("3ABC1587297CE7B9EA1AD6651CF2BC4D7F92ED25CABC8553F567D1B40EBB8764", 16)))
             {
-                Fail("X value incorrect");
+                Assert.Fail("X value incorrect");
             }
 
             DsaSigner signer = new DsaSigner();
@@ -558,25 +506,21 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             if (!sig[0].Equals(new BigInteger("5F184E645A38BE8FB4A6871B6503A9D12924C7ABE04B71410066C2ECA6E3BE3E", 16)))
             {
-                Fail("R value incorrect");
+                Assert.Fail("R value incorrect");
             }
 
             if (!sig[1].Equals(new BigInteger("91EB0C7BA3D4B9B60B825C3D9F2CADA8A2C9D7723267B033CBCDCF8803DB9C18", 16)))
             {
-                Fail("S value incorrect");
+                Assert.Fail("S value incorrect");
             }
 
             signer.Init(false, kp.Public);
-
-            if (!signer.VerifySignature(msg, sig[0], sig[1]))
-            {
-                Fail("signature not verified");
-            }
-
-            ImplTestModulusSizeBound();
+            bool shouldVerify = signer.VerifySignature(msg, sig[0], sig[1]);
+            Assert.True(shouldVerify, "signature not verified");
         }
 
-        private void ImplTestModulusSizeBound()
+        [Test]
+        public void ModulusSizeBound()
         {
             // An oversized prime modulus must be rejected at import before the super-linear validation
             // exponentiation, capping the import-time CPU-exhaustion vector. The value is not prime --
@@ -587,20 +531,12 @@ namespace Org.BouncyCastle.Crypto.Tests
             {
                 new DsaPublicKeyParameters(BigInteger.Two,
                     new DsaParameters(hugeP, BigInteger.ValueOf(11), BigInteger.Two));
-                Fail("oversized DSA modulus accepted");
+                Assert.Fail("oversized DSA modulus accepted");
             }
             catch (ArgumentException e)
             {
-                IsTrue("unexpected DSA message: " + e.Message, e.Message.Equals("DSA modulus out of range"));
+                Assert.That(e.Message.StartsWith("DSA modulus out of range"), "unexpected DSA message: " + e.Message);
             }
-        }
-
-        [Test]
-        public void TestFunction()
-        {
-            string resultText = Perform().ToString();
-
-            Assert.AreEqual(Name + ": Okay", resultText);
         }
 
         private class DsaTestSecureRandom

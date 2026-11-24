@@ -5,7 +5,9 @@ using NUnit.Framework;
 
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto.EC;
+using Org.BouncyCastle.Math.EC.Multiplier;
 using Org.BouncyCastle.Security;
+using Org.BouncyCastle.Utilities;
 
 namespace Org.BouncyCastle.Math.EC.Tests
 {
@@ -14,6 +16,23 @@ namespace Org.BouncyCastle.Math.EC.Tests
     {
         private const int Scale = 4;
         private static readonly SecureRandom Random = new SecureRandom();
+
+        [Test]
+        public void TestMultiply()
+        {
+            X9ECParameters x9 = CustomNamedCurves.GetByName("secp256r1");
+            Assert.NotNull(x9);
+            DoTestMultiply(x9);
+        }
+
+        [Test, Explicit]
+        public void TestMultiplyComplete()
+        {
+            foreach (X9ECParameters x9 in GetTestCurves())
+            {
+                DoTestMultiply(x9);
+            }
+        }
 
         [Test]
         public void TestSumOfMultiplies()
@@ -49,6 +68,25 @@ namespace Org.BouncyCastle.Math.EC.Tests
             }
         }
 
+        private void DoTestMultiply(X9ECParameters x9)
+        {
+            for (int i = 0; i < Scale; ++i)
+            {
+                ECPoint p = GetRandomPoint(x9);
+                BigInteger a = GetRandomScalar(x9);
+
+                ECPoint u = ReferenceMultiply(p, a);
+                ECPoint v1 = ECAlgorithms.Multiply(p, a);
+                ECPoint v2 = ECAlgorithms.MultiplySecret(p, a);
+
+                ECPoint[] results = new ECPoint[]{ u, v1, v2 };
+                x9.Curve.NormalizeAll(results);
+
+                AssertPointsEqual("ECAlgorithms.Multiply is incorrect", results[0], results[1]);
+                AssertPointsEqual("ECAlgorithms.MultiplySecret is incorrect", results[0], results[2]);
+            }
+        }
+
         private void DoTestSumOfMultiplies(X9ECParameters x9)
         {
             ECPoint[] points = new ECPoint[Scale];
@@ -62,11 +100,11 @@ namespace Org.BouncyCastle.Math.EC.Tests
             ECPoint u = x9.Curve.Infinity;
             for (int i = 0; i < Scale; ++i)
             {
-                u = u.Add(points[i].Multiply(scalars[i]));
+                u = u.Add(ReferenceMultiply(points[i], scalars[i]));
 
                 ECPoint v = ECAlgorithms.SumOfMultiplies(CopyPoints(points, i + 1), CopyScalars(scalars, i + 1));
 
-                ECPoint[] results = new ECPoint[] { u, v };
+                ECPoint[] results = new ECPoint[]{ u, v };
                 x9.Curve.NormalizeAll(results);
 
                 AssertPointsEqual("ECAlgorithms.SumOfMultiplies is incorrect", results[0], results[1]);
@@ -83,49 +121,34 @@ namespace Org.BouncyCastle.Math.EC.Tests
                 ECPoint q = GetRandomPoint(x9);
                 BigInteger b = GetRandomScalar(x9);
 
-                ECPoint u = p.Multiply(a).Add(q.Multiply(b));
-                ECPoint v = ECAlgorithms.ShamirsTrick(p, a, q, b);
-                ECPoint w = ECAlgorithms.SumOfTwoMultiplies(p, a, q, b);
+                ECPoint u = ReferenceMultiply(p, a).Add(ReferenceMultiply(q, b));
+                ECPoint v1 = ECAlgorithms.ShamirsTrick(p, a, q, b);
+                ECPoint v2 = ECAlgorithms.SumOfTwoMultiplies(p, a, q, b);
+                ECPoint v3 = ECAlgorithms.SumOfTwoMultipliesSecret(p, a, q, b);
 
-                ECPoint[] results = new ECPoint[] { u, v, w };
+                ECPoint[] results = new ECPoint[]{ u, v1, v2, v3 };
                 x9.Curve.NormalizeAll(results);
 
                 AssertPointsEqual("ECAlgorithms.ShamirsTrick is incorrect", results[0], results[1]);
                 AssertPointsEqual("ECAlgorithms.SumOfTwoMultiplies is incorrect", results[0], results[2]);
+                AssertPointsEqual("ECAlgorithms.SumOfTwoMultipliesSecret is incorrect", results[0], results[3]);
 
                 p = q;
                 a = b;
             }
         }
 
-        private void AssertPointsEqual(string message, ECPoint a, ECPoint b)
-        {
-            Assert.AreEqual(a, b, message);
-        }
+        private void AssertPointsEqual(string message, ECPoint a, ECPoint b) => Assert.AreEqual(a, b, message);
 
-        private ECPoint[] CopyPoints(ECPoint[] ps, int len)
-        {
-            ECPoint[] result = new ECPoint[len];
-            Array.Copy(ps, 0, result, 0, len);
-            return result;
-        }
+        private ECPoint[] CopyPoints(ECPoint[] ps, int len) => Arrays.CopySegment(ps, 0, len);
 
-        private BigInteger[] CopyScalars(BigInteger[] ks, int len)
-        {
-            BigInteger[] result = new BigInteger[len];
-            Array.Copy(ks, 0, result, 0, len);
-            return result;
-        }
+        private BigInteger[] CopyScalars(BigInteger[] ks, int len) => Arrays.CopySegment(ks, 0, len);
 
-        private ECPoint GetRandomPoint(X9ECParameters x9)
-        {
-            return x9.G.Multiply(GetRandomScalar(x9));
-        }
+        private ECPoint GetRandomPoint(X9ECParameters x9) =>
+            new FixedPointCombMultiplier().Multiply(x9.G, GetRandomScalar(x9));
 
-        private BigInteger GetRandomScalar(X9ECParameters x9)
-        {
-            return new BigInteger(x9.N.BitLength, Random);
-        }
+        private BigInteger GetRandomScalar(X9ECParameters x9) =>
+            BigIntegers.CreateRandomBigInteger(x9.N.BitLength, Random);
 
         private IList<X9ECParameters> GetTestCurves()
         {
@@ -169,5 +192,7 @@ namespace Org.BouncyCastle.Math.EC.Tests
                 }
             }
         }
+
+        private static ECPoint ReferenceMultiply(ECPoint p, BigInteger k) => ECAlgorithms.ReferenceMultiply(p, k);
     }
 }

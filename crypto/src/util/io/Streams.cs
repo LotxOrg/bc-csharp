@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 #if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
 using System.Runtime.CompilerServices;
@@ -13,6 +14,20 @@ using System.Threading.Tasks;
 
 namespace Org.BouncyCastle.Utilities.IO
 {
+    /// <summary>
+    /// Minimal adapter over a source of bytes (e.g. a <see cref="Stream"/> or a <see cref="BinaryReader"/>) for
+    /// generic reading helpers. Implement on a struct so that the helpers can be JIT-specialized per source.
+    /// </summary>
+    internal interface IReadSource
+    {
+        /// <summary>
+        /// Read up to <paramref name="count"/> bytes into <paramref name="buffer"/> at <paramref name="offset"/>,
+        /// returning the number of bytes read, or zero at end of data. Same contract as
+        /// <see cref="Stream.Read(byte[], int, int)"/>.
+        /// </summary>
+        int Read(byte[] buffer, int offset, int count);
+    }
+
     public static class Streams
     {
         private static readonly int MaxStackAlloc = Platform.Is64BitProcess ? 4096 : 1024;
@@ -159,6 +174,24 @@ namespace Org.BouncyCastle.Utilities.IO
             return ReadAsyncCompletion(readTask, sharedBuffer, buffer);
         }
 
+        /*
+         * NOTE: The static members of ValueTask arrived in .NET 5, so are unavailable to .NET Standard targets. The
+         * fallbacks are the expressions that ValueTask.CompletedTask and ValueTask.FromCanceled are defined as.
+         */
+        internal static ValueTask CompletedValueTask =>
+#if NET5_0_OR_GREATER
+            ValueTask.CompletedTask;
+#else
+            default;
+#endif
+
+        internal static ValueTask CanceledValueTask(CancellationToken cancellationToken) =>
+#if NET5_0_OR_GREATER
+            ValueTask.FromCanceled(cancellationToken);
+#else
+            new ValueTask(Task.FromCanceled(cancellationToken));
+#endif
+
         internal static async ValueTask<int> ReadAsyncCompletion(Task<int> readTask, byte[] localBuffer,
             Memory<byte> localDestination)
         {
@@ -170,7 +203,7 @@ namespace Org.BouncyCastle.Utilities.IO
             }
             finally
             {
-                Array.Clear(localBuffer, 0, localBuffer.Length);
+                Arrays.ZeroMemory(localBuffer);
             }
         }
 #endif
@@ -203,16 +236,93 @@ namespace Org.BouncyCastle.Utilities.IO
             }
             return totalRead;
         }
+
+        /// <summary>
+        /// Implement <see cref="Stream.Read(Span{byte})"/> for a stream whose real work happens in
+        /// <see cref="Stream.Read(byte[], int, int)"/>, by reading into <paramref name="transferBuffer"/> and copying
+        /// out, a block at a time.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Intended for <c>Read(Span)</c> overrides of our own stream classes, where the base implementation would
+        /// otherwise fall back to a byte-at-a-time <see cref="Stream.ReadByte"/> loop. Because
+        /// <paramref name="transferBuffer"/> is reused, it must only ever be filled by code we control: pass
+        /// <c>this</c> as <paramref name="inStr"/>. Handing a reused buffer to a caller-supplied stream would let
+        /// that stream retain it and observe later reads.
+        /// </para>
+        /// <para>
+        /// Reading continues only while the stream keeps satisfying a block in full; the first short read ends it,
+        /// that being the stream's signal that nothing more is ready. The result may therefore be short of
+        /// <paramref name="buffer"/>, as the contract allows, but a stream with data to hand still fills it in one
+        /// call. This never blocks for more than the byte-at-a-time base implementation would, which stops only when
+        /// <paramref name="buffer"/> is full or the data ends.
+        /// </para>
+        /// </remarks>
+        internal static int ReadSpanViaArray(Stream inStr, Span<byte> buffer, byte[] transferBuffer)
+        {
+            if (transferBuffer.Length < 1)
+                throw new ArgumentException("must not be empty", nameof(transferBuffer));
+
+            int totalRead = 0;
+            while (totalRead < buffer.Length)
+            {
+                int count = System.Math.Min(buffer.Length - totalRead, transferBuffer.Length);
+                int numRead = inStr.Read(transferBuffer, 0, count);
+                if (numRead < 1)
+                    break;
+
+                new ReadOnlySpan<byte>(transferBuffer, 0, numRead).CopyTo(buffer[totalRead..]);
+                totalRead += numRead;
+
+                if (numRead < count)
+                    break;
+            }
+            return totalRead;
+        }
+
+        /// <summary>
+        /// As <see cref="ReadSpanViaArray(Stream, Span{byte}, byte[])"/>, allocating a single-use transfer buffer of
+        /// at most <see cref="DefaultBufferSize"/> bytes (which caps the block size, not the result). Prefer the
+        /// overload taking a buffer when the caller can hold one for the lifetime of the stream.
+        /// </summary>
+        internal static int ReadSpanViaArray(Stream inStr, Span<byte> buffer)
+        {
+            int count = System.Math.Min(buffer.Length, DefaultBufferSize);
+            if (count < 1)
+                return 0;
+
+            byte[] transferBuffer = new byte[count];
+            try
+            {
+                return ReadSpanViaArray(inStr, buffer, transferBuffer);
+            }
+            finally
+            {
+                Arrays.ZeroMemory(transferBuffer);
+            }
+        }
 #endif
 
+        /// <summary>Best-effort query of the data remaining before the end of a seekable stream.</summary>
+        /// <remarks>
+        /// Fails (rather than clamping) unless the stream reports a non-negative length and position. A position
+        /// beyond the end is a legal seek target and reports zero available.
+        /// The result is only meaningful when nothing sits between the caller and the stream: a buffering reader
+        /// (e.g. <see cref="BinaryReader"/> makes no promise about read-ahead) can leave the stream position past
+        /// the caller's logical position, and such callers should rely on <see cref="TryGetLength"/> instead.
+        /// </remarks>
         public static bool TryGetAvailable(Stream stream, out long available)
         {
             try
             {
                 if (stream.CanSeek)
                 {
-                    available = System.Math.Max(0L, stream.Length - stream.Position);
-                    return true;
+                    long length = stream.Length, position = stream.Position;
+                    if (length >= 0L && position >= 0L)
+                    {
+                        available = System.Math.Max(0L, length - position);
+                        return true;
+                    }
                 }
             }
             catch (Exception)
@@ -224,50 +334,173 @@ namespace Org.BouncyCastle.Utilities.IO
             return false;
         }
 
+        /// <summary>Best-effort query of the total length of a seekable stream.</summary>
+        /// <remarks>Fails (rather than clamping) unless the stream reports a non-negative length.</remarks>
+        public static bool TryGetLength(Stream stream, out long length)
+        {
+            try
+            {
+                if (stream.CanSeek)
+                {
+                    length = stream.Length;
+                    if (length >= 0L)
+                        return true;
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore; this method is best-effort only
+            }
+
+            length = default;
+            return false;
+        }
+
         /// <summary>
         /// Read exactly <paramref name="exactLength"/> bytes from <paramref name="stream"/>, allocated incrementally.
         /// </summary>
         /// <remarks>
-        /// The resulting <paramref name="bytes"/> array (if any) is grown incrementally as data arrives rather than
-        /// allocated at the full length up front. A caller passing an untrusted (possibly hostile) length therefore
-        /// cannot drive an extremely large allocation from a short input.
+        /// Lengths up to 128 KiB are allocated up front. Above that, the first quarter of the data is read into
+        /// 64 KiB chunks and the full-length array is allocated only once that much has actually arrived, so a caller
+        /// passing an untrusted (possibly hostile) length cannot drive an extremely large allocation from a short
+        /// input: the bytes allocated never exceed five times the bytes delivered plus 128 KiB.
         /// </remarks>
-        internal static bool TryReadExactIncremental(Stream stream, int exactLength, out byte[] bytes)
+        internal static bool TryReadExactIncremental(Stream stream, int exactLength, out byte[] bytes) =>
+            TryReadExactIncremental(new StreamReadSource(stream), exactLength, out bytes);
+
+        /// <summary>
+        /// Read exactly <paramref name="exactLength"/> bytes from <paramref name="source"/>, allocated incrementally.
+        /// </summary>
+        /// <remarks>
+        /// <typeparamref name="TSource"/> is constrained to a struct so that the JIT specializes this method per
+        /// adapter and the <see cref="IReadSource.Read"/> calls are direct rather than interface dispatch.
+        /// </remarks>
+        internal static bool TryReadExactIncremental<TSource>(TSource source, int exactLength, out byte[] bytes)
+            where TSource : struct, IReadSource
         {
-            if (stream == null)
-                throw new ArgumentNullException(nameof(stream));
-            if (exactLength < 0)
-                throw new ArgumentOutOfRangeException("cannot be negative", nameof(exactLength));
-            if (exactLength > Arrays.MaxLength)
-                throw new ArgumentOutOfRangeException("exceeds maximum length for an array", nameof(exactLength));
+            return TryReadExactIncremental(source, exactLength, DefaultRopeShift, out bytes);
+        }
 
-            int initialAlloc = exactLength;
-            while (initialAlloc > DefaultBufferSize)
+        /// <summary>
+        /// Chunk size for the incremental reader: 64 KiB, comfortably under the 85,000-byte large object heap
+        /// threshold, and a power of two.
+        /// </summary>
+        private const int RopeChunkSize = 1 << 16;
+
+        /// <summary>
+        /// Default safety fraction for the incremental reader, as a shift: a quarter of the data must arrive before
+        /// the full-length allocation, which bounds the bytes allocated at five times the bytes delivered.
+        /// </summary>
+        private const int DefaultRopeShift = 2;
+
+        /// <summary>
+        /// Read exactly <paramref name="exactLength"/> bytes from <paramref name="source"/>: the first
+        /// <c>exactLength >> ropeShift</c> bytes as a rope of <see cref="RopeChunkSize"/> chunks, then allocate the
+        /// result, copy the chunks into it and read the remainder directly into it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Lengths up to two chunks are allocated up front and read directly. Above that, the full allocation happens
+        /// only after 1/2^<paramref name="ropeShift"/> of the claimed data has arrived, and each chunk is allocated
+        /// just ahead of its own fill, so at any point the bytes allocated are at most
+        /// (2^<paramref name="ropeShift"/> + 1) times the bytes delivered plus 2 * <see cref="RopeChunkSize"/>. The
+        /// only intermediate arrays are small-object-heap chunks, so a read leaves no large object heap garbage.
+        /// Memory traffic above the cutoff is 3N + 3N/2^ropeShift (3N below it), less than a geometrically grown
+        /// single buffer with the same bound.
+        /// </para>
+        /// <para>
+        /// Chunks are fresh zeroed arrays that are never reused, and the result is zeroed rather than uninitialized:
+        /// the source is handed a reference to each of them, so neither pooling nor uninitialized allocation would
+        /// be hygienic.
+        /// </para>
+        /// </remarks>
+        private static bool TryReadExactIncremental<TSource>(TSource source, int exactLength, int ropeShift,
+            out byte[] bytes)
+            where TSource : struct, IReadSource
+        {
+            ValidateExactLength(exactLength);
+            if (ropeShift < 0 || ropeShift > 30)
+                throw new ArgumentOutOfRangeException(nameof(ropeShift));
+
+            // Small lengths are read directly: the up-front allocation is bounded by the cutoff, and a rope phase
+            // would cost an extra allocation and copy to defer at most that much.
+            if (exactLength <= 2 * RopeChunkSize)
+                return TryReadExactDirect(source, exactLength, out bytes);
+
+            int threshold = exactLength >> ropeShift;
+            var chunks = new List<byte[]>();
+            int received = 0;
+            while (received < threshold)
             {
-                initialAlloc = (int)(((uint)initialAlloc + 3U) >> 2);
-            }
-
-            byte[] buf = new byte[initialAlloc];
-            int totalRead = 0;
-            while (totalRead < exactLength)
-            {
-                if (totalRead == buf.Length)
-                {
-                    int expandedAlloc = (int)System.Math.Min(exactLength, 4L * buf.Length);
-                    buf = Arrays.CopyOf(buf, expandedAlloc);
-                }
-
-                int numRead = stream.Read(buf, totalRead, buf.Length - totalRead);
-                if (numRead < 1)
+                // The last rope chunk is capped so that the rope phase ends exactly at the threshold; the total
+                // allocation is then (1 + 1/2^ropeShift) N for every length above the cutoff.
+                int chunkSize = System.Math.Min(RopeChunkSize, threshold - received);
+                byte[] chunk = new byte[chunkSize];
+                if (!TryReadFully(source, chunk, 0, chunkSize))
                 {
                     bytes = default;
                     return false;
                 }
 
-                totalRead += numRead;
+                chunks.Add(chunk);
+                received += chunkSize;
             }
 
-            bytes = buf;
+            // Zeroed, not uninitialized: the source is handed a reference to the whole array for the remainder.
+            byte[] result = new byte[exactLength];
+
+            // Copy the chunks in first, while they are still cache-warm and before the remainder read can stall.
+            int pos = 0;
+            foreach (byte[] chunk in chunks)
+            {
+                Array.Copy(chunk, 0, result, pos, chunk.Length);
+                pos += chunk.Length;
+            }
+
+            if (!TryReadFully(source, result, received, exactLength - received))
+            {
+                bytes = default;
+                return false;
+            }
+
+            bytes = result;
+            return true;
+        }
+
+        private static void ValidateExactLength(int exactLength)
+        {
+            if (exactLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(exactLength), "cannot be negative");
+            if (exactLength > Arrays.MaxLength)
+                throw new ArgumentOutOfRangeException(nameof(exactLength), "exceeds maximum length for an array");
+        }
+
+        private static bool TryReadExactDirect<TSource>(TSource source, int exactLength, out byte[] bytes)
+            where TSource : struct, IReadSource
+        {
+            byte[] result = new byte[exactLength];
+            if (!TryReadFully(source, result, 0, exactLength))
+            {
+                bytes = default;
+                return false;
+            }
+
+            bytes = result;
+            return true;
+        }
+
+        private static bool TryReadFully<TSource>(TSource source, byte[] buffer, int offset, int count)
+            where TSource : struct, IReadSource
+        {
+            while (count > 0)
+            {
+                int numRead = source.Read(buffer, offset, count);
+                if (numRead < 1)
+                    return false;
+
+                offset += numRead;
+                count -= numRead;
+            }
             return true;
         }
 
@@ -293,7 +526,7 @@ namespace Org.BouncyCastle.Utilities.IO
             }
             finally
             {
-                Array.Clear(localBuffer, 0, localBuffer.Length);
+                Arrays.ZeroMemory(localBuffer);
             }
         }
 
@@ -331,7 +564,7 @@ namespace Org.BouncyCastle.Utilities.IO
             }
             finally
             {
-                Array.Clear(localBuffer, 0, localBuffer.Length);
+                Arrays.ZeroMemory(localBuffer);
             }
         }
 
@@ -339,10 +572,59 @@ namespace Org.BouncyCastle.Utilities.IO
             CancellationToken cancellationToken = default)
         {
             if (cancellationToken.IsCancellationRequested)
-                return ValueTask.FromCanceled(cancellationToken);
+                return CanceledValueTask(cancellationToken);
 
             destination.Write(buffer.Span);
-            return ValueTask.CompletedTask;
+            return CompletedValueTask;
+        }
+
+        /// <summary>
+        /// Implement <see cref="Stream.Write(ReadOnlySpan{byte})"/> for a stream whose real work happens in
+        /// <see cref="Stream.Write(byte[], int, int)"/>, by copying into <paramref name="transferBuffer"/> a block at
+        /// a time. All of <paramref name="buffer"/> is written, as the contract requires.
+        /// </summary>
+        /// <remarks>
+        /// Intended for <c>Write(ReadOnlySpan)</c> overrides of our own stream classes, where the base implementation
+        /// would otherwise fall back to a byte-at-a-time <see cref="Stream.WriteByte"/> loop. Because
+        /// <paramref name="transferBuffer"/> is reused, it must only ever be read by code we control: pass
+        /// <c>this</c> as <paramref name="outStr"/>. Handing a reused buffer to a caller-supplied stream would let
+        /// that stream retain it and observe later writes.
+        /// </remarks>
+        internal static void WriteSpanViaArray(Stream outStr, ReadOnlySpan<byte> buffer, byte[] transferBuffer)
+        {
+            // Guards against an infinite loop: a zero-length transfer buffer would consume nothing each pass.
+            if (transferBuffer.Length < 1)
+                throw new ArgumentException("must not be empty", nameof(transferBuffer));
+
+            while (!buffer.IsEmpty)
+            {
+                int count = System.Math.Min(buffer.Length, transferBuffer.Length);
+                buffer[..count].CopyTo(transferBuffer);
+                outStr.Write(transferBuffer, 0, count);
+                buffer = buffer[count..];
+            }
+        }
+
+        /// <summary>
+        /// As <see cref="WriteSpanViaArray(Stream, ReadOnlySpan{byte}, byte[])"/>, allocating a single-use transfer
+        /// buffer of at most <see cref="DefaultBufferSize"/> bytes. Prefer the overload taking a buffer when the
+        /// caller can hold one for the lifetime of the stream.
+        /// </summary>
+        internal static void WriteSpanViaArray(Stream outStr, ReadOnlySpan<byte> buffer)
+        {
+            int count = System.Math.Min(buffer.Length, DefaultBufferSize);
+            if (count < 1)
+                return;
+
+            byte[] transferBuffer = new byte[count];
+            try
+            {
+                WriteSpanViaArray(outStr, buffer, transferBuffer);
+            }
+            finally
+            {
+                Arrays.ZeroMemory(transferBuffer);
+            }
         }
 #endif
 
@@ -363,6 +645,19 @@ namespace Org.BouncyCastle.Utilities.IO
                 buf.WriteTo(segment);
             }
             return size;
+        }
+
+        private readonly struct StreamReadSource
+            : IReadSource
+        {
+            private readonly Stream m_stream;
+
+            internal StreamReadSource(Stream stream)
+            {
+                m_stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            }
+
+            public int Read(byte[] buffer, int offset, int count) => m_stream.Read(buffer, offset, count);
         }
     }
 }

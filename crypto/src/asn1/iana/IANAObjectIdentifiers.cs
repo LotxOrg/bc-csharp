@@ -1,3 +1,5 @@
+using System;
+
 namespace Org.BouncyCastle.Asn1.Iana
 {
     // TODO[api] Make static
@@ -123,17 +125,20 @@ namespace Org.BouncyCastle.Asn1.Iana
         /** 1.3.6.1.5.5.7.6.60 id-MLKEM768-ECDH-P384-SHA3-256 */
         public static readonly DerObjectIdentifier id_MLKEM768_ECDH_P384_SHA3_256 = id_alg.Branch("60");
         /** 1.3.6.1.5.5.7.6.61 id-MLKEM768-ECDH-brainpoolP256r1-SHA3-256 */
-        public static readonly DerObjectIdentifier id_MLKEM768_ECDH_BP256_SHA3_256 = id_alg.Branch("61");
+        public static readonly DerObjectIdentifier id_MLKEM768_ECDH_brainpoolP256r1_SHA3_256 = id_alg.Branch("61");
+        [Obsolete("Use 'id_MLKEM768_ECDH_brainpoolP256r1_SHA3_256' instead")]
+        public static readonly DerObjectIdentifier id_MLKEM768_ECDH_BP256_SHA3_256 = id_MLKEM768_ECDH_brainpoolP256r1_SHA3_256;
         /** 1.3.6.1.5.5.7.6.62 id-MLKEM1024-RSA3072-SHA3-256 */
         public static readonly DerObjectIdentifier id_MLKEM1024_RSA3072_SHA3_256 = id_alg.Branch("62");
         /** 1.3.6.1.5.5.7.6.63 id-MLKEM1024-ECDH-P384-SHA3-256 */
         public static readonly DerObjectIdentifier id_MLKEM1024_ECDH_P384_SHA3_256 = id_alg.Branch("63");
         /** 1.3.6.1.5.5.7.6.64 id-MLKEM1024-ECDH-brainpoolP384r1-SHA3-256 */
-        public static readonly DerObjectIdentifier id_MLKEM1024_ECDH_BP384_SHA3_256 = id_alg.Branch("64");
+        public static readonly DerObjectIdentifier id_MLKEM1024_ECDH_brainpoolP384r1_SHA3_256 = id_alg.Branch("64");
+        [Obsolete("Use 'id_MLKEM1024_ECDH_brainpoolP384r1_SHA3_256' instead")]
+        public static readonly DerObjectIdentifier id_MLKEM1024_ECDH_BP384_SHA3_256 = id_MLKEM1024_ECDH_brainpoolP384r1_SHA3_256;
         /** 1.3.6.1.5.5.7.6.65 id-MLKEM1024-X448-SHA3-256 */
         public static readonly DerObjectIdentifier id_MLKEM1024_X448_SHA3_256 = id_alg.Branch("65");
         /** 1.3.6.1.5.5.7.6.66 id-MLKEM1024-ECDH-P521-SHA3-256 */
         public static readonly DerObjectIdentifier id_MLKEM1024_ECDH_P521_SHA3_256 = id_alg.Branch("66");
-
     }
 }

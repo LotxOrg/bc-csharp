@@ -19,16 +19,36 @@ namespace Org.BouncyCastle.Utilities.IO
             {
                 T t = Parse(parse, stream, leaveOpen: true);
                 if (stream.Position != stream.Length)
-                    throw new InvalidDataException($"unexpected data found after {description}");
+                    throw new IOException($"unexpected data found after {description}");
                 return t;
             }
         }
 
+        /// <summary>
+        /// Read exactly <paramref name="count"/> bytes, or throw <see cref="EndOfStreamException"/>.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="count"/> is typically a length field read from untrusted data, and
+        /// <see cref="BinaryReader.ReadBytes(int)"/> allocates the whole result before reading anything, so a
+        /// hostile length would otherwise cost up to 2GB of allocation before the data ran out. A count beyond
+        /// the total length of a seekable stream is rejected up front, and a large count is read incrementally
+        /// so that allocation tracks the data actually supplied.
+        /// </remarks>
+        /// <exception cref="ArgumentOutOfRangeException">if <paramref name="count"/> is negative.</exception>
+        /// <exception cref="EndOfStreamException">if the stream ends before <paramref name="count"/> bytes.</exception>
         public static byte[] ReadBytesFully(BinaryReader binaryReader, int count)
         {
-            byte[] bytes = binaryReader.ReadBytes(count);
-            if (bytes == null || bytes.Length != count)
+            if (count < 0)
+                throw new ArgumentOutOfRangeException(nameof(count));
+
+            // The reader makes no promise about read-ahead, so the stream position is not a reliable measure of
+            // the data remaining; only the total length is a safe bound.
+            if (Streams.TryGetLength(binaryReader.BaseStream, out long length) && count > length)
                 throw new EndOfStreamException();
+
+            if (!TryReadExactIncremental(binaryReader, count, out byte[] bytes))
+                throw new EndOfStreamException();
+
             return bytes;
         }
 
@@ -108,6 +128,26 @@ namespace Org.BouncyCastle.Utilities.IO
         {
             ulong n = binaryReader.ReadUInt64();
             return BitConverter.IsLittleEndian ? n : Longs.ReverseBytes(n);
+        }
+
+        /// <summary>
+        /// Read exactly <paramref name="exactLength"/> bytes from <paramref name="binaryReader"/>, allocated
+        /// incrementally. See <see cref="Streams.TryReadExactIncremental(Stream, int, out byte[])"/>.
+        /// </summary>
+        internal static bool TryReadExactIncremental(BinaryReader binaryReader, int exactLength, out byte[] bytes) =>
+            Streams.TryReadExactIncremental(new BinaryReaderReadSource(binaryReader), exactLength, out bytes);
+
+        private readonly struct BinaryReaderReadSource
+            : IReadSource
+        {
+            private readonly BinaryReader m_binaryReader;
+
+            internal BinaryReaderReadSource(BinaryReader binaryReader)
+            {
+                m_binaryReader = binaryReader ?? throw new ArgumentNullException(nameof(binaryReader));
+            }
+
+            public int Read(byte[] buffer, int offset, int count) => m_binaryReader.Read(buffer, offset, count);
         }
     }
 }

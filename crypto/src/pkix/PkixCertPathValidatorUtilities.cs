@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.IsisMtt;
@@ -8,7 +9,6 @@ using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Math;
-using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Collections;
 using Org.BouncyCastle.X509;
@@ -73,93 +73,61 @@ namespace Org.BouncyCastle.Pkix
         }
 
         /// <summary>
-        /// Search the given Set of TrustAnchor's for one that is the
-        /// issuer of the given X509 certificate.
+        /// Return the first of the given trust anchors that names the issuer of <paramref name="cert"/> and whose
+        /// public key verifies it, or null if there is none.
         /// </summary>
         /// <param name="cert">the X509 certificate</param>
         /// <param name="trustAnchors">a Set of TrustAnchor's</param>
-        /// <returns>the <code>TrustAnchor</code> object if found or
-        /// <code>null</code> if not.
-        /// </returns>
-        /// @exception
+        /// <exception cref="Exception">
+        /// A trust anchor named the issuer, but none of those that did verified the certificate.
+        /// </exception>
         internal static TrustAnchor FindTrustAnchor(X509Certificate cert, ISet<TrustAnchor> trustAnchors)
         {
-            var iter = trustAnchors.GetEnumerator();
-            TrustAnchor trust = null;
-            AsymmetricKeyParameter trustPublicKey = null;
+            X509Name certIssuer = GetIssuerPrincipal(cert);
+
             Exception invalidKeyEx = null;
 
-            X509CertStoreSelector certSelectX509 = new X509CertStoreSelector();
-
-            try
+            foreach (TrustAnchor trust in trustAnchors)
             {
-                certSelectX509.Subject = GetIssuerPrincipal(cert);
-            }
-            catch (IOException ex)
-            {
-                throw new Exception("Cannot set subject search criteria for trust anchor.", ex);
-            }
+                AsymmetricKeyParameter trustPublicKey = GetIssuerPublicKey(trust, certIssuer);
+                if (trustPublicKey == null)
+                    continue;
 
-            while (iter.MoveNext() && trust == null)
-            {
-                trust = iter.Current;
-                if (trust.TrustedCert != null)
+                try
                 {
-                    if (certSelectX509.Match(trust.TrustedCert))
-                    {
-                        trustPublicKey = trust.TrustedCert.GetPublicKey();
-                    }
-                    else
-                    {
-                        trust = null;
-                    }
+                    cert.Verify(trustPublicKey);
+                    return trust;
                 }
-                else if (trust.CAName != null && trust.CAPublicKey != null)
+                catch (Exception e)
                 {
-                    try
+                    // Anchors sharing the issuer's subject DN can fail in turn; report the first failure.
+                    if (invalidKeyEx == null)
                     {
-                        X509Name certIssuer = GetIssuerPrincipal(cert);
-                        X509Name caName = new X509Name(trust.CAName);
-
-                        if (certIssuer.Equivalent(caName, true))
-                        {
-                            trustPublicKey = trust.CAPublicKey;
-                        }
-                        else
-                        {
-                            trust = null;
-                        }
-                    }
-                    catch (InvalidParameterException)
-                    {
-                        trust = null;
-                    }
-                }
-                else
-                {
-                    trust = null;
-                }
-
-                if (trustPublicKey != null)
-                {
-                    try
-                    {
-                        cert.Verify(trustPublicKey);
-                    }
-                    catch (Exception ex)
-                    {
-                        invalidKeyEx = ex;
-                        trust = null;
+                        invalidKeyEx = e;
                     }
                 }
             }
 
-            if (trust == null && invalidKeyEx != null)
-            {
+            if (invalidKeyEx != null)
                 throw new Exception("TrustAnchor found but certificate validation failed.", invalidKeyEx);
-            }
 
-            return trust;
+            return null;
+        }
+
+        /// <summary>
+        /// Return the public key of the given trust anchor if it names <paramref name="certIssuer"/>, else null. An
+        /// anchor supplied as a certificate is matched on that certificate's subject, one supplied as a name and key
+        /// on the name.
+        /// </summary>
+        private static AsymmetricKeyParameter GetIssuerPublicKey(TrustAnchor trust, X509Name certIssuer)
+        {
+            // A TrustAnchor is built either from a trusted certificate, or from a name and a public key, so when
+            // there is no trusted certificate both CA and CAPublicKey are present.
+            X509Certificate trustedCert = trust.TrustedCert;
+            if (trustedCert == null)
+                return certIssuer.Equivalent(trust.CA, inOrder: true) ? trust.CAPublicKey : null;
+
+            return certIssuer.Equivalent(trustedCert.SubjectDN, inOrder: true) ? trustedCert.GetPublicKey() : null;
         }
 
         internal static bool IsIssuerTrustAnchor(X509Certificate cert, ISet<TrustAnchor> trustAnchors)
@@ -228,6 +196,36 @@ namespace Org.BouncyCastle.Pkix
             X509Certificate cert)
         {
             return cert.SubjectDN.Equivalent(cert.IssuerDN, true);
+        }
+
+        /// <summary>
+        /// Return the number of non-self-issued intermediate certificates the path would hold with
+        /// <paramref name="tbvCert"/> added to it, the first certificate in the combined path being the target.
+        /// </summary>
+        /// <remarks>
+        /// This is what a builder's maximum path length bounds, so a self-issued certificate (a key rollover, say)
+        /// does not use up any of the limit, and a limit of zero admits the target alone.
+        /// </remarks>
+        internal static int CountIntermediates(IList<X509Certificate> tbvPath, X509Certificate tbvCert)
+        {
+            // tbvCert is then the target itself
+            if (tbvPath.Count < 1)
+                return 0;
+
+            int count = 0;
+            // tbvPath[0] is the target, so skip it
+            for (int i = 1; i < tbvPath.Count; i++)
+            {
+                if (!IsSelfIssued(tbvPath[i]))
+                {
+                    ++count;
+                }
+            }
+            if (!IsSelfIssued(tbvCert))
+            {
+                ++count;
+            }
+            return count;
         }
 
         internal static AlgorithmIdentifier GetAlgorithmIdentifier(AsymmetricKeyParameter key)
@@ -429,16 +427,24 @@ namespace Org.BouncyCastle.Pkix
 
         internal static void GetCertStatus(DateTime validDate, X509Crl crl, object cert, CertStatus certStatus)
         {
-            X509CrlEntry crl_entry = crl.GetRevokedCertificate(GetSerialNumber(cert));
-            if (crl_entry == null)
-                return;
+            bool isIndirect = crl.IsIndirect;
 
-            X509Name issuer = GetIssuerPrincipal(cert);
-
-            if (!issuer.Equivalent(crl_entry.GetCertificateIssuer(), true)
-                && !issuer.Equivalent(crl.IssuerDN, true))
+            X509CrlEntry crl_entry = null;
+            if (isIndirect)
             {
-                return;
+                crl_entry = GetIndirectCrlEntry(crl, GetSerialNumber(cert), GetIssuerPrincipal(cert));
+                if (crl_entry == null)
+                    return;
+            }
+            else if (!GetIssuerPrincipal(cert).Equivalent(crl.IssuerDN, true))
+            {
+                return;  // not for our issuer, ignore
+            }
+            else
+            {
+                crl_entry = crl.GetRevokedCertificate(GetSerialNumber(cert));
+                if (crl_entry == null)
+                    return;
             }
 
             int reasonCodeValue = CrlReason.Unspecified;
@@ -449,7 +455,7 @@ namespace Org.BouncyCastle.Pkix
 
                 try
                 {
-                    var reasonCode = crl_entry.GetExtension(X509Extensions.ReasonCode, CrlReason.GetInstance);
+                    var reasonCode = crl_entry.GetExtension(X509Extensions.ReasonCode, DerEnumerated.GetInstance);
                     if (null != reasonCode)
                     {
                         reasonCodeValue = reasonCode.IntValueExact;
@@ -462,24 +468,51 @@ namespace Org.BouncyCastle.Pkix
             }
 
             DateTime revocationDate = crl_entry.RevocationDate;
-            if (validDate.Ticks < revocationDate.Ticks)
+
+            // for reason keyCompromise, caCompromise, aACompromise or unspecified
+            if (IsRevocationEffective(validDate, revocationDate, reasonCodeValue))
             {
-                switch (reasonCodeValue)
-                {
-                case CrlReason.Unspecified:
-                case CrlReason.KeyCompromise:
-                case CrlReason.CACompromise:
-                case CrlReason.AACompromise:
-                    break;
-                default:
-                    return;
-                }
+                // (i) or (j)
+                certStatus.Status = reasonCodeValue;
+                certStatus.RevocationDate = revocationDate;
+            }
+        }
+
+        /**
+         * Find the entry of an indirect CRL for the certificate with the given serial number and issuer.
+         * An indirect CRL (RFC 5280 sec. 5.2.5) lists certificates from more than one issuer and a serial
+         * number is only unique within its issuer, so the entry cannot be located by serial number alone:
+         * an entry carrying the serial number is the certificate's only if it applies to the certificate's
+         * issuer, the one named by its certificateIssuer extension or inherited from the entries before it
+         * (sec. 5.3.3). The lookup by serial number is tried first, as it avoids building the set of all
+         * entries, and every entry carrying the serial number is checked when that is not conclusive.
+         *
+         * @return the entry naming the certificate, or null if the CRL carries none.
+         */
+        private static X509CrlEntry GetIndirectCrlEntry(X509Crl crl, BigInteger serialNumber, X509Name certIssuer)
+        {
+            X509CrlEntry serialEntry = crl.GetRevokedCertificate(serialNumber);
+            if (serialEntry == null || certIssuer.Equivalent(GetEntryIssuer(crl, serialEntry), true))
+                return serialEntry;
+
+            ISet<X509CrlEntry> entries = crl.GetRevokedCertificates();
+            if (entries == null)
+                return null;
+
+            foreach (var entry in entries)
+            {
+                if (serialNumber.Equals(entry.SerialNumber) && certIssuer.Equivalent(GetEntryIssuer(crl, entry), true))
+                    return entry;
             }
 
-            // (i) or (j)
-            certStatus.Status = reasonCodeValue;
-            certStatus.RevocationDate = revocationDate;
+            return null;
         }
+
+        /// <summary>
+        /// Return the issuer of the certificate an entry of an indirect CRL applies to.
+        /// </summary>
+        private static X509Name GetEntryIssuer(X509Crl crl, X509CrlEntry entry) =>
+            entry.GetCertificateIssuer() ?? crl.IssuerDN;
 
         /**
          * Return the next working key inheriting DSA parameters if necessary.
@@ -732,12 +765,8 @@ namespace Org.BouncyCastle.Pkix
             crlselect.CompleteCrlEnabled = true;
 
             var crls = PkixCrlUtilities.ImplFindCrls(crlselect, pkixParams, validityDate);
-            if (crls.Count < 1)
-            {
-                // TODO[pkix] RecoverableCertPathValidatorException
-                // TODO[pkix] Rfc4519Style for issuer
-                throw new PkixCertPathValidatorException($"No CRLs found for issuer \"{certObjIssuer}\"", null, index);
-            }
+
+            CheckCrlsNotEmpty(index, crls, certObj, certObjIssuer, pkixParams);
 
             return crls;
         }
@@ -989,6 +1018,35 @@ namespace Org.BouncyCastle.Pkix
             return certs;
         }
 
+        internal static void CheckCrlsNotEmpty(int index, HashSet<X509Crl> crls, object certObj, X509Name certObjIssuer,
+            PkixParameters pkixParams)
+        {
+            if (crls.Count < 1)
+            {
+                // TODO[pkix] Rfc4519Style for issuer
+                //string issuer = Rfc4519Style.Instance.ToString(certObjIssuer);
+                string issuer = certObjIssuer.ToString();
+
+                StringBuilder msg = new StringBuilder("No CRLs found for issuer \"").Append(issuer).Append('\"');
+                AppendCrlLookupDiagnostics(msg, certObj, pkixParams);
+                throw new PkixRecoverableCertPathValidatorException(msg.ToString(), null, index);
+            }
+        }
+
+        /// <summary>
+        /// Append diagnostic context to the supplied <paramref name="msg"/> buffer explaining why a CRL lookup came
+        /// back empty.
+        /// </summary>
+        /// <remarks>
+        /// The certificate's advertised CRL Distribution Point URIs (if any), and the
+        /// number of stores the validator consulted.
+        /// </remarks>
+        private static void AppendCrlLookupDiagnostics(StringBuilder msg, object certObj, PkixParameters pkixParams)
+        {
+            // TODO[pkix] Basic implementation
+            // TODO[pkix] Update xmldoc and implementation for future Properties.X509_ENABLE_CRLDP port.
+        }
+
         internal static void CheckCrlCriticalExtensions(X509Crl crl, string exceptionMessage)
         {
             /*
@@ -1063,6 +1121,26 @@ namespace Org.BouncyCastle.Pkix
                     return extension.IsCritical;
             }
             return false;
+        }
+
+        /**
+         * RFC 5280 sec. 6.3.3 (i)/(j): whether a CRL entry's revocation takes effect for the
+         * validation date - it does when the date is not before the entry's revocation date, and
+         * additionally, whatever the dates, for the unspecified, keyCompromise, cACompromise and
+         * aACompromise reasons.
+         *
+         * @param validDate      the date validation is being performed for.
+         * @param revocationDate the CRL entry's revocation date.
+         * @param reasonCodeValue the entry's {@link CRLReason} code, {@link CRLReason#unspecified} if absent.
+         * @return true if the certificate is to be treated as revoked at validDate.
+         */
+        private static bool IsRevocationEffective(DateTime validDate, DateTime revocationDate, int reasonCodeValue)
+        {
+            return validDate.Ticks >= revocationDate.Ticks
+                || reasonCodeValue == CrlReason.Unspecified
+                || reasonCodeValue == CrlReason.KeyCompromise
+                || reasonCodeValue == CrlReason.CACompromise
+                || reasonCodeValue == CrlReason.AACompromise;
         }
     }
 }

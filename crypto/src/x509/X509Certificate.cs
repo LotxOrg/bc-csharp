@@ -422,22 +422,25 @@ namespace Org.BouncyCastle.X509
         {
             StringBuilder buf = new StringBuilder();
 
-            buf.Append("  [0]         Version: ").Append(this.Version).AppendLine();
-            buf.Append("         SerialNumber: ").Append(this.SerialNumber).AppendLine();
-            buf.Append("             IssuerDN: ").Append(this.IssuerDN).AppendLine();
-            buf.Append("           Start Date: ").Append(this.NotBefore).AppendLine();
-            buf.Append("           Final Date: ").Append(this.NotAfter).AppendLine();
-            buf.Append("            SubjectDN: ").Append(this.SubjectDN).AppendLine();
-            buf.Append("           Public Key: ").Append(this.GetPublicKey()).AppendLine();
-            buf.Append("  Signature Algorithm: ").Append(this.SigAlgName).AppendLine();
+            buf.Append("  [0]         Version: ").Append(Version).AppendLine();
+            buf.Append("         SerialNumber: ").Append(SerialNumber).AppendLine();
+            buf.Append("             IssuerDN: ").Append(IssuerDN).AppendLine();
+            buf.Append("           Start Date: ").Append(NotBefore).AppendLine();
+            buf.Append("           Final Date: ").Append(NotAfter).AppendLine();
+            buf.Append("            SubjectDN: ").Append(SubjectDN).AppendLine();
+            buf.Append("           Public Key: ").Append(GetPublicKey()).AppendLine();
+            buf.Append("  Signature Algorithm: ").Append(SigAlgName).AppendLine();
 
-            byte[] sig = this.GetSignature();
-            buf.Append("            Signature: ").AppendLine(Hex.ToHexString(sig, 0, 20));
+            byte[] sig = GetSignature();
+            int sigPos = System.Math.Min(20, sig.Length);
 
-            for (int i = 20; i < sig.Length; i += 20)
+            buf.Append("            Signature: ").AppendLine(Hex.ToHexString(sig, 0, sigPos));
+
+            while (sigPos < sig.Length)
             {
-                int len = System.Math.Min(20, sig.Length - i);
-                buf.Append("                       ").AppendLine(Hex.ToHexString(sig, i, len));
+                int next = System.Math.Min(20, sig.Length - sigPos);
+                buf.Append("                       ").AppendLine(Hex.ToHexString(sig, sigPos, next));
+                sigPos += next;
             }
 
             X509Extensions extensions = c.Extensions;
@@ -485,15 +488,14 @@ namespace Org.BouncyCastle.X509
                             }
                             else
                             {
-                                buf.Append(oid.Id);
-                                buf.Append(" value = ").Append(Asn1Dump.DumpAsString(obj));
-                                //buf.Append(" value = ").Append("*****").AppendLine();
+                                buf.Append(oid.GetID());
+                                buf.Append(" value = ");
+                                Asn1Dump.AppendAsString(buf, obj);
                             }
                         }
                         catch (Exception)
                         {
-                            buf.Append(oid.Id);
-                            //buf.Append(" value = ").Append(new string(Hex.encode(ext.getValue().getOctets()))).AppendLine();
+                            buf.Append(oid.GetID());
                             buf.Append(" value = ").Append("*****");
                         }
                     }

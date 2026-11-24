@@ -43,6 +43,20 @@ namespace Org.BouncyCastle.Utilities
         public static readonly string Asn1MaxLimit = "Org.BouncyCastle.Asn1.MaxLimit";
 
         /// <summary>
+        /// Allow CMS key-agreement recipients to retry the key-encryption-key derivation in known non-standard
+        /// forms, if the standard derivation fails to unwrap the content-encryption key.
+        /// </summary>
+        /// <remarks>
+        /// Two forms are retried. bc-csharp versions prior to 2.8.0 derived the key-encryption key as though the
+        /// key-wrap AlgorithmIdentifier carried NULL parameters, even when it was encoded with absent parameters (as
+        /// it is for AES key wrap, per RFC 5753). Some senders, among them bc-java 1.53 to 1.86 for 1-Pass ECMQV,
+        /// give the KDF the user keying material itself (for ECMQV, the addedukm, or nothing) as its SharedInfo, in
+        /// place of the ECC-CMS-SharedInfo of RFC 5753 sec. 7.2. This property defaults to 'true', so that messages
+        /// produced by those senders remain readable; set it to 'false' to accept only the standard derivation.
+        /// </remarks>
+        public static readonly string CmsAllowLegacyKeyAgreeKdf = "Org.BouncyCastle.Cms.AllowLegacyKeyAgreeKdf";
+
+        /// <summary>
         /// Allow legacy RSA PKCS#1 v1.5 key-transport unwrap in CMS when the content-encryption key has no fixed size.
         /// </summary>
         /// <remarks>
@@ -65,6 +79,38 @@ namespace Org.BouncyCastle.Utilities
         public static readonly string FpeDisable = "Org.BouncyCastle.Fpe.Disable";
 
         public static readonly string FpeDisableFf1 = "Org.BouncyCastle.Fpe.Disable_Ff1";
+
+        /// <summary>
+        /// Allow GOST key AlgorithmIdentifier parameters that do not match the structure required for the key
+        /// algorithm, where earlier bc-csharp versions could write them.
+        /// </summary>
+        /// <remarks>
+        /// bc-csharp versions prior to 2.8.0 could encode a GOST R 34.10-2012 key with an encryptionParamSet, which
+        /// the RFC 9215 parameters structure does not have, a key on a TC26 parameter set under the GOST R 34.10-2001
+        /// key algorithm, which RFC 4491 does not allow, or a key whose parameters identify a different key
+        /// algorithm (e.g. a GOST R 34.11-94 digestParamSet under a GOST R 34.10-2012 key algorithm). This property
+        /// defaults to 'false'; set it to 'true' to accept such keys.
+        /// </remarks>
+        public static readonly string GostAllowLenientKeyParameters = "Org.BouncyCastle.Gost.AllowLenientKeyParameters";
+
+        /// <summary>
+        /// The largest SEED, in bytes, accepted in an LMS or HSS private key encoding. Default 1024.
+        /// </summary>
+        /// <remarks>
+        /// SP 800-208 sec. 6.1 makes SEED n bytes (24 or 32 for the defined parameter sets), so the default is far
+        /// above any legitimate value; the bound keeps what a decoder commits to on the strength of a length field
+        /// read from untrusted data finite. A value below the parameter set's n is ignored, since SEED may not be
+        /// shorter than that.
+        /// </remarks>
+        public static readonly string LmsMaxSeedLength = "Org.BouncyCastle.Lms.MaxSeedLength";
+
+        /// <summary>
+        /// The largest OCSP response, in bytes, to accept from a responder. Default 64KiB.
+        /// </summary>
+        /// <remarks>
+        /// Exceeding the limit is treated as an unreachable responder.
+        /// </remarks>
+        public static readonly string OcspMaxResponseSize = "Org.BouncyCastle.Ocsp.MaxResponseSize";
 
         /// <summary>
         /// Upper bound on the PBKDF2 iteration count honoured when decrypting a PBES2-protected PKCS#8/PEM private key.

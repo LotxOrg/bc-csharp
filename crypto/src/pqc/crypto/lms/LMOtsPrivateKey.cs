@@ -33,14 +33,27 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
 
             LmsUtilities.ByteArray(m_I, ctx);
             LmsUtilities.U32Str(m_q, ctx);
-            LmsUtilities.U16Str((short)LMOts.D_MESG, ctx);
+            LmsUtilities.U16Str(LMOts.D_MESG, ctx);
             LmsUtilities.ByteArray(C, ctx);
 
             return new LmsContext(this, sigParams, ctx, C, path);
         }
 
+        /// <summary>Derive the public key: K, the hash of the ends of this key's Winternitz chains, under the
+        /// identifier and leaf number this key was built with.</summary>
+        internal LMOtsPublicKey GeneratePublicKey()
+        {
+            byte[] K = LMOts.LmsOtsGeneratePublicKey(m_parameters, m_I, m_q, m_masterSecret);
+            return new LMOtsPublicKey(m_parameters, m_I, m_q, K);
+        }
+
+        // TODO[api] Remove
         public byte[] GetI() => Arrays.Clone(m_I);
 
+        internal byte[] InternalI => m_I;
+
+        // TODO[api] Remove (see LmsPrivateKeyParameters.GetMasterSecret)
+        [Obsolete("Use 'LmsPrivateKeyParameters.GetEncoded' instead")]
         public byte[] GetMasterSecret() => Arrays.Clone(m_masterSecret);
 
         public LMOtsParameters Parameters => m_parameters;
@@ -59,7 +72,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
         [Obsolete("Use 'GetI' instead")]
         public byte[] I => m_I;
 
-        [Obsolete("Use 'GetMasterSecret' instead")]
+        [Obsolete("Use 'LmsPrivateKeyParameters.GetEncoded' instead")]
         public byte[] MasterSecret => m_masterSecret;
     }
 }

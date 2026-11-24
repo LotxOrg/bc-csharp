@@ -61,7 +61,7 @@ namespace Org.BouncyCastle.Crypto.Agreement
             if (pubPoint.IsInfinity)
                 throw new InvalidOperationException("Infinity is not a valid public key for ECDHC");
 
-            ECPoint P = pubPoint.Multiply(hd).Normalize();
+            ECPoint P = ECAlgorithms.MultiplySecret(pubPoint, hd).Normalize();
             if (P.IsInfinity)
                 throw new InvalidOperationException("Infinity is not a valid agreement value for ECDHC");
 

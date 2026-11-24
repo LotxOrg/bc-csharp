@@ -1,16 +1,15 @@
 using System;
-using System.Collections.Generic;
 
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.CryptoPro;
 using Org.BouncyCastle.Asn1.EdEC;
 using Org.BouncyCastle.Asn1.Oiw;
 using Org.BouncyCastle.Asn1.Pkcs;
-using Org.BouncyCastle.Asn1.Rosstandart;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto.Utilities;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Math.EC;
 using Org.BouncyCastle.Utilities;
@@ -27,15 +26,6 @@ namespace Org.BouncyCastle.X509
     /// </remarks>
     public static class SubjectPublicKeyInfoFactory
     {
-        private static readonly HashSet<DerObjectIdentifier> cryptoProOids = new HashSet<DerObjectIdentifier>
-        {
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProA,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProB,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProC,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProXchA,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProXchB,
-        };
-
         /// <summary>
         /// Create a <see cref="SubjectPublicKeyInfo"/> object for a given public key.
         /// </summary>
@@ -93,56 +83,31 @@ namespace Org.BouncyCastle.X509
             {
                 var q = ecKey.Q;
 
-                if (ecKey.Parameters is ECGost3410Parameters gostParams)
+                // ECGOST3410
+                var gostParameters = ECGost3410Utilities.GetEncodingParameters(ecKey);
+                if (gostParameters != null)
                 {
-                    int fieldSize = ecKey.Parameters.Curve.FieldElementEncodingLength;
-                    DerObjectIdentifier algOid;
+                    var gostAlgID = ECGost3410Utilities.CreateAlgorithmIdentifier(gostParameters);
 
-                    if (cryptoProOids.Contains(gostParams.PublicKeyParamSet))
-                    {
-                        algOid = CryptoProObjectIdentifiers.GostR3410x2001;
-                    }
-                    else
-                    {
-                        algOid = fieldSize > 32
-                            ? RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512
-                            : RosstandartObjectIdentifiers.id_tc26_gost_3410_12_256;
-                    }
+                    int fieldSize = ECGost3410Utilities.GetFieldElementEncodingLength(gostParameters);
 
-                    var algParams = new Gost3410PublicKeyAlgParameters(gostParams.PublicKeyParamSet,
-                        gostParams.DigestParamSet, gostParams.EncryptionParamSet);
-                    var algID = new AlgorithmIdentifier(algOid, algParams);
-                    return new SubjectPublicKeyInfo(algID, CreateECGost3410PublicKey(fieldSize, q));
+                    return new SubjectPublicKeyInfo(gostAlgID, CreateECGost3410PublicKey(fieldSize, q));
                 }
 
-                if (ecKey.AlgorithmName == "ECGOST3410")
-                {
-                    if (ecKey.PublicKeyParamSet == null)
-                        throw new NotImplementedException("Not a CryptoPro parameter set");
-
-                    int fieldSize = ecKey.Parameters.Curve.FieldElementEncodingLength;
-                    var algParams = new Gost3410PublicKeyAlgParameters(ecKey.PublicKeyParamSet,
-                        CryptoProObjectIdentifiers.GostR3411x94CryptoProParamSet);
-                    var algID = new AlgorithmIdentifier(CryptoProObjectIdentifiers.GostR3410x2001, algParams);
-                    return new SubjectPublicKeyInfo(algID, CreateECGost3410PublicKey(fieldSize, q));
-                }
-                else
-                {
-                    var algParams = ecKey.Parameters.ToX962Parameters();
+                var algParams = ecKey.Parameters.ToX962Parameters();
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                    int encodedLength = q.GetEncodedLength(false);
-                    Span<byte> pubKey = encodedLength <= 512
-                        ? stackalloc byte[encodedLength]
-                        : new byte[encodedLength];
-                    q.EncodeTo(false, pubKey);
+                int encodedLength = q.GetEncodedLength(false);
+                Span<byte> pubKey = encodedLength <= 512
+                    ? stackalloc byte[encodedLength]
+                    : new byte[encodedLength];
+                q.EncodeTo(false, pubKey);
 #else
-                    byte[] pubKey = q.GetEncoded(false);
+                byte[] pubKey = q.GetEncoded(false);
 #endif
 
-                    var algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, algParams);
-                    return new SubjectPublicKeyInfo(algID, pubKey);
-                }
+                var algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, algParams);
+                return new SubjectPublicKeyInfo(algID, pubKey);
             }
 
             if (publicKey is Gost3410PublicKeyParameters gost3410Key)

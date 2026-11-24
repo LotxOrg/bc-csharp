@@ -2,7 +2,6 @@ using System;
 
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.Cms.Ecc;
-using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Utilities;
@@ -53,10 +52,10 @@ namespace Org.BouncyCastle.Crypto.Agreement.Kdf
 
         private void InitKdf()
         {
-            var keyInfo = new AlgorithmIdentifier(m_parameters.Algorithm, DerNull.Instance);
+            var keyInfo = m_parameters.AlgID;
+            var entityUInfo = DerOctetString.WithContentsOptional(m_parameters.ExtraInfo);
             var suppPubInfo = DerOctetString.WithContents(Pack.UInt32_To_BE((uint)m_parameters.KeySize));
-            // TODO Should the optional DHKdfParameters.ExtraInfo be used for ECC_CMS_SharedInfo.entityUInfo?
-            var eccCmsSharedInfo = new ECC_CMS_SharedInfo(keyInfo, suppPubInfo);
+            var eccCmsSharedInfo = new ECC_CMS_SharedInfo(keyInfo, entityUInfo, suppPubInfo);
             byte[] iv = eccCmsSharedInfo.GetEncoded(Asn1Encodable.Der);
             m_kdf.Init(new KdfParameters(m_parameters.Z, iv));
         }

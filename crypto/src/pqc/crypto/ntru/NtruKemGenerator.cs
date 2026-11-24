@@ -15,6 +15,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Ntru
     ///
     /// <seealso cref="NtruKemExtractor"/>
     /// <seealso href="https://ntru.org/">NTRU website</seealso>
+    // TODO[api] On promotion, rename and implement IKemEncapsulator
     public class NtruKemGenerator
         : IEncapsulatedSecretGenerator
     {
@@ -30,7 +31,8 @@ namespace Org.BouncyCastle.Pqc.Crypto.Ntru
             if (recipientKey == null)
                 throw new ArgumentNullException(nameof(recipientKey));
             if (!(recipientKey is NtruPublicKeyParameters publicKey))
-                throw new ArgumentException(nameof(recipientKey));
+                throw new ArgumentException($"{nameof(NtruKemGenerator)} expects {nameof(NtruPublicKeyParameters)}",
+                    nameof(recipientKey));
 
             var parameterSet = publicKey.Parameters.ParameterSet;
             var sampling = new NtruSampling(parameterSet);

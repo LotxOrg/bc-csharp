@@ -13,8 +13,6 @@ namespace Org.BouncyCastle.Crypto.Signers.SlhDsa
         internal readonly SlhDsaEngine engine;
         internal readonly WotsPlus wots;
 
-        internal readonly byte[] HTPubKey;
-
         internal HT(SlhDsaEngine engine, byte[] skSeed, byte[] pkSeed)
         {
             this.skSeed = skSeed;
@@ -22,18 +20,22 @@ namespace Org.BouncyCastle.Crypto.Signers.SlhDsa
 
             this.engine = engine;
             this.wots = new WotsPlus(engine);
+        }
 
+        /// <summary>Compute the hypertree public key (PK.root): the root of the top-layer XMSS tree.</summary>
+        /// <remarks>
+        /// Only key generation needs this. Signing already knows PK.root, so it must not be recomputed there:
+        /// it costs a full XMSS tree build, i.e. about 1/d of the signing work.
+        /// </remarks>
+        internal byte[] PKGen()
+        {
             Adrs adrs = new Adrs();
             adrs.SetLayerAddress((uint)engine.D - 1U);
             adrs.SetTreeAddress(0);
 
-            byte[] htPubKey = null;
-            if (skSeed != null)
-            {
-                htPubKey = new byte[engine.N];
-                TreeHash(skSeed, 0, engine.HPrime, pkSeed, adrs, htPubKey, 0);
-            }
-            this.HTPubKey = htPubKey;
+            byte[] htPubKey = new byte[engine.N];
+            TreeHash(skSeed, 0, engine.HPrime, pkSeed, adrs, htPubKey, 0);
+            return htPubKey;
         }
 
         internal void Sign(byte[] M, ulong idx_tree, uint idx_leaf, byte[] signature)

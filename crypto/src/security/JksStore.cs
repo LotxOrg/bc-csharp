@@ -580,7 +580,10 @@ namespace Org.BouncyCastle.Security
         private ErasableByteStream ValidateStream(Stream inputStream, char[] password)
         {
             byte[] rawStore = Streams.ReadAll(inputStream);
-            int checksumPos = rawStore.Length - 20;
+
+            // Only SHA-1 is supported
+            int checksumSize = 20;
+            int checksumPos = GetChecksumPos(rawStore, checksumSize);
 
             if (password != null)
             {
@@ -590,7 +593,7 @@ namespace Org.BouncyCastle.Security
                 byte[] checksum = CalculateChecksum(password, rawStore, 0, checksumPos);
 #endif
 
-                if (!Arrays.FixedTimeEquals(20, checksum, 0, rawStore, checksumPos))
+                if (!Arrays.FixedTimeEquals(checksumSize, checksum, 0, rawStore, checksumPos))
                 {
                     Array.Clear(rawStore, 0, rawStore.Length);
                     throw new IOException("password incorrect or store tampered with");
@@ -605,11 +608,14 @@ namespace Org.BouncyCastle.Security
         private ErasableByteStream ValidateStream(Stream inputStream, ReadOnlySpan<char> password)
         {
             byte[] rawStore = Streams.ReadAll(inputStream);
-            int checksumPos = rawStore.Length - 20;
+
+            // Only SHA-1 is supported
+            int checksumSize = 20;
+            int checksumPos = GetChecksumPos(rawStore, checksumSize);
 
             byte[] checksum = CalculateChecksum(password, rawStore.AsSpan(0, checksumPos));
 
-            if (!Arrays.FixedTimeEquals(20, checksum, 0, rawStore, checksumPos))
+            if (!Arrays.FixedTimeEquals(checksumSize, checksum, 0, rawStore, checksumPos))
             {
                 Array.Clear(rawStore, 0, rawStore.Length);
                 throw new IOException("password incorrect or store tampered with");
@@ -662,6 +668,16 @@ namespace Org.BouncyCastle.Security
             return (X509Certificate[])chain?.Clone();
         }
 
+        /// <exception cref="EndOfStreamException"/>
+        private static int GetChecksumPos(byte[] rawStore, int checksumSize)
+        {
+            // A store is at least the 12-byte header (magic, version, entry count) plus a checksum
+            if (rawStore.Length - checksumSize < 12)
+                throw new EndOfStreamException("Invalid keystore format");
+
+            return rawStore.Length - checksumSize;
+        }
+
         private static string ConvertAlias(string alias)
         {
             return alias.ToLowerInvariant();
@@ -699,15 +715,18 @@ namespace Org.BouncyCastle.Security
         }
 #endif
 
-        private static byte[] ReadBufferWithInt16Length(BinaryReader br)
+        private static byte[] ReadBufferWithUInt16Length(BinaryReader br)
         {
-            int length = BinaryReaders.ReadInt16BigEndian(br);
+            int length = BinaryReaders.ReadUInt16BigEndian(br);
             return BinaryReaders.ReadBytesFully(br, length);
         }
 
         private static byte[] ReadBufferWithInt32Length(BinaryReader br)
         {
             int length = BinaryReaders.ReadInt32BigEndian(br);
+            if (length < 0)
+                throw new IOException($"negative length: {length}");
+
             return BinaryReaders.ReadBytesFully(br, length);
         }
 
@@ -739,7 +758,8 @@ namespace Org.BouncyCastle.Security
 
         private static string ReadUtf(BinaryReader br)
         {
-            byte[] mUtfBytes = ReadBufferWithInt16Length(br);
+            // DataInput.readUTF reads an unsigned length
+            byte[] mUtfBytes = ReadBufferWithUInt16Length(br);
 
             int i = 0;
             MemoryStream utfBytes = new MemoryStream(mUtfBytes.Length);
@@ -822,6 +842,19 @@ namespace Org.BouncyCastle.Security
             bw.Write(buffer);
         }
 
+        /// <exception cref="IOException"/>
+        private static void WriteBufferWithUInt16Length(BinaryWriter bw, byte[] buffer, int length)
+        {
+            if (length < 0 || length > buffer.Length)
+                throw new ArgumentOutOfRangeException(nameof(length));
+
+            if (length > ushort.MaxValue)
+                throw new IOException($"encoded string too long: {length} bytes");
+
+            BinaryWriters.WriteUInt16BigEndian(bw, (ushort)length);
+            bw.Write(buffer, 0, length);
+        }
+
         private static void WriteDateTime(BinaryWriter bw, DateTime dateTime)
         {
             long unixMS = DateTimeUtilities.DateTimeToUnixMs(dateTime);
@@ -894,11 +927,8 @@ namespace Org.BouncyCastle.Security
                 }
             }
 
-            byte[] buffer = mUtfBytes.GetBuffer();
-            short length = Convert.ToInt16(mUtfBytes.Length);
-
-            BinaryWriters.WriteInt16BigEndian(bw, length);
-            bw.Write(buffer, 0, length);
+            // DataOutput.writeUTF writes an unsigned length
+            WriteBufferWithUInt16Length(bw, mUtfBytes.GetBuffer(), Convert.ToInt32(mUtfBytes.Length));
         }
 
         /**

@@ -1,35 +1,36 @@
-using System;
 using System.Collections.Generic;
 using System.IO;
 
 using Org.BouncyCastle.Asn1;
-using Org.BouncyCastle.Asn1.Nist;
+using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.Utilities.Collections;
 using Org.BouncyCastle.Utilities.IO;
+
+using NistOids = Org.BouncyCastle.Asn1.Nist.NistObjectIdentifiers;
 
 namespace Org.BouncyCastle.Pqc.Crypto.Lms
 {
     public sealed class LMOtsParameters
     {
-        public static LMOtsParameters sha256_n32_w1 = new LMOtsParameters(1, 32, 1, 265, 7, 8516, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n32_w2 = new LMOtsParameters(2, 32, 2, 133, 6, 4292, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n32_w4 = new LMOtsParameters(3, 32, 4, 67, 4, 2180, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n32_w8 = new LMOtsParameters(4, 32, 8, 34, 0, 1124, NistObjectIdentifiers.IdSha256);
+        public static readonly LMOtsParameters sha256_n32_w1 = Create(1, 32, 1, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n32_w2 = Create(2, 32, 2, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n32_w4 = Create(3, 32, 4, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n32_w8 = Create(4, 32, 8, NistOids.IdSha256);
 
-        public static LMOtsParameters sha256_n24_w1 = new LMOtsParameters(5, 24, 1, 200, 8, 5436, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n24_w2 = new LMOtsParameters(6, 24, 2, 101, 6, 2940, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n24_w4 = new LMOtsParameters(7, 24, 4, 51, 4, 1500, NistObjectIdentifiers.IdSha256);
-        public static LMOtsParameters sha256_n24_w8 = new LMOtsParameters(8, 24, 8, 26, 0, 1020, NistObjectIdentifiers.IdSha256);
+        public static readonly LMOtsParameters sha256_n24_w1 = Create(5, 24, 1, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n24_w2 = Create(6, 24, 2, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n24_w4 = Create(7, 24, 4, NistOids.IdSha256);
+        public static readonly LMOtsParameters sha256_n24_w8 = Create(8, 24, 8, NistOids.IdSha256);
 
-        public static LMOtsParameters shake256_n32_w1 = new LMOtsParameters(9, 32, 1, 265, 7, 8516, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n32_w2 = new LMOtsParameters(10, 32, 2, 133, 6, 4292, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n32_w4 = new LMOtsParameters(11, 32, 4, 67, 4, 2180, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n32_w8 = new LMOtsParameters(12, 32, 8, 34, 0, 1124, NistObjectIdentifiers.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n32_w1 = Create(9, 32, 1, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n32_w2 = Create(10, 32, 2, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n32_w4 = Create(11, 32, 4, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n32_w8 = Create(12, 32, 8, NistOids.IdShake256Len);
 
-        public static LMOtsParameters shake256_n24_w1 = new LMOtsParameters(13, 24, 1, 200, 8, 5436, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n24_w2 = new LMOtsParameters(14, 24, 2, 101, 6, 2940, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n24_w4 = new LMOtsParameters(15, 24, 4, 51, 4, 1500, NistObjectIdentifiers.IdShake256Len);
-        public static LMOtsParameters shake256_n24_w8 = new LMOtsParameters(16, 24, 8, 26, 0, 1020, NistObjectIdentifiers.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n24_w1 = Create(13, 24, 1, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n24_w2 = Create(14, 24, 2, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n24_w4 = Create(15, 24, 4, NistOids.IdShake256Len);
+        public static readonly LMOtsParameters shake256_n24_w8 = Create(16, 24, 8, NistOids.IdShake256Len);
 
         private static Dictionary<int, LMOtsParameters> ParametersByID = new Dictionary<int, LMOtsParameters>
         {
@@ -61,8 +62,26 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
         {
             int id = BinaryReaders.ReadInt32BigEndian(binaryReader);
             if (!ParametersByID.TryGetValue(id, out var parameters))
-                throw new InvalidDataException($"unknown LM-OTS type code: {id}");
+                throw new IOException($"unknown LM-OTS type code: {id}");
             return parameters;
+        }
+
+        /// <summary>
+        /// Build a parameter set from its defining values: the typecode, the hash length n and the Winternitz
+        /// parameter w. The rest follows from n and w (RFC 8554 Appendix B): u = ceil(8n / w) chains carry the
+        /// message digest, v = ceil((floor(log2(u * (2^w - 1))) + 1) / w) chains carry its checksum, p = u + v, the
+        /// checksum is left-shifted by ls = 16 - v * w, and a signature is u32str(type) || C || y[0..p-1], i.e.
+        /// 4 + n + p * n bytes.
+        /// </summary>
+        private static LMOtsParameters Create(int id, int n, int w, DerObjectIdentifier digestOid)
+        {
+            int u = (8 * n + w - 1) / w;
+            int v = (Integers.BitLength(u * ((1 << w) - 1)) + w - 1) / w; // BitLength(x) == floor(log2(x)) + 1
+            int p = u + v;
+            int ls = 16 - v * w;
+            int sigLen = 4 + n + p * n;
+
+            return new LMOtsParameters(id, n, w, p, ls, sigLen, digestOid);
         }
 
         private readonly int m_id;
@@ -70,10 +89,10 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
         private readonly int m_w;
         private readonly int m_p;
         private readonly int m_ls;
-        private readonly uint m_sigLen;
+        private readonly int m_sigLen;
         private readonly DerObjectIdentifier m_digestOid;
 
-        internal LMOtsParameters(int id, int n, int w, int p, int ls, uint sigLen, DerObjectIdentifier digestOid)
+        private LMOtsParameters(int id, int n, int w, int p, int ls, int sigLen, DerObjectIdentifier digestOid)
         {
             m_id = id;
             m_n = n;
@@ -83,6 +102,16 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             m_sigLen = sigLen;
             m_digestOid = digestOid;
         }
+
+        /// <summary>The typecode identifies the parameter set: the rest of the values are derived from it.</summary>
+        /// <remarks>
+        /// The instances are interned - the constructor is private and every lookup hands back one of the static
+        /// fields - so this agrees with the reference equality it replaces. It states the intent instead of
+        /// leaving callers to rely on the interning.
+        /// </remarks>
+        public override bool Equals(object obj) => obj is LMOtsParameters that && m_id == that.m_id;
+
+        public override int GetHashCode() => m_id;
 
         public int ID => m_id;
 
@@ -94,8 +123,12 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
 
         public int Ls => m_ls;
 
-        public int SigLen => Convert.ToInt32(m_sigLen);
+        public int SigLen => m_sigLen;
 
+        // TODO[api] Expand to an AlgorithmIdentifier at promotion. A digest OID alone identifies the hash
+        // function only where the parameters are absent; id_shake256_len carries its output length in bits as a
+        // mandatory parameter (RFC 8702), so the OID here is the same for the n=24 and n=32 sets and N has to be
+        // compared alongside it to tell one hash function from another.
         public DerObjectIdentifier DigestOid => m_digestOid;
     }
 }

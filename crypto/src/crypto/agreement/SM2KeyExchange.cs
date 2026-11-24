@@ -156,7 +156,7 @@ namespace Org.BouncyCastle.Crypto.Agreement
             BigInteger k1 = mECParams.H.Multiply(tA).Mod(mECParams.N);
             BigInteger k2 = k1.Multiply(x2).Mod(mECParams.N);
 
-            return ECAlgorithms.SumOfTwoMultiplies(p1, k1, p2, k2).Normalize();
+            return ECAlgorithms.SumOfTwoMultipliesSecret(p1, k1, p2, k2).Normalize();
         }
 
         protected virtual byte[] Kdf(ECPoint u, byte[] za, byte[] zb, int klen)

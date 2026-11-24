@@ -189,7 +189,7 @@ namespace Org.BouncyCastle.Math.EC.Tests
             }
             catch (ArgumentException e)
             {
-                Assert.AreEqual("F2m m value out of range", e.Message);
+                Assert.That(e.Message.StartsWith("F2m m value out of range"));
             }
         }
 

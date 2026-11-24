@@ -160,7 +160,7 @@ namespace Org.BouncyCastle.Tls
 
                 recordLayer.InitHeartbeat(state.heartbeat, HeartbeatMode.peer_allowed_to_send == state.heartbeatPolicy);
 
-                return new DtlsTransport(recordLayer, client.IgnoreCorruptDtlsRecords);
+                return new DtlsTransport(recordLayer);
             }
 
             InvalidateSession(state);
@@ -293,7 +293,7 @@ namespace Org.BouncyCastle.Tls
             }
             else
             {
-                state.keyExchange.ProcessClientCredentials(clientAuthCredentials);                    
+                state.keyExchange.ProcessClientCredentials(clientAuthCredentials);
             }
 
             var clientSupplementalData = client.GetClientSupplementalData();
@@ -386,7 +386,7 @@ namespace Org.BouncyCastle.Tls
 
             recordLayer.InitHeartbeat(state.heartbeat, HeartbeatMode.peer_allowed_to_send == state.heartbeatPolicy);
 
-            return new DtlsTransport(recordLayer, client.IgnoreCorruptDtlsRecords);
+            return new DtlsTransport(recordLayer);
         }
 
         /// <exception cref="IOException"/>
@@ -540,8 +540,7 @@ namespace Org.BouncyCastle.Tls
                  * TLS_EMPTY_RENEGOTIATION_INFO_SCSV signaling cipher suite value in the ClientHello.
                  * Including both is NOT RECOMMENDED.
                  */
-                bool noRenegExt = (null == TlsUtilities.GetExtensionData(state.clientExtensions,
-                    ExtensionType.renegotiation_info));
+                bool noRenegExt = !TlsUtilities.HasExtension(state.clientExtensions, ExtensionType.renegotiation_info);
                 bool noRenegScsv = !Arrays.Contains(state.offeredCipherSuites,
                     CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
 
@@ -838,7 +837,7 @@ namespace Org.BouncyCastle.Tls
             }
 
             /*
-             * 
+             *
              * RFC 3546 2.2 Note that the extended server hello message is only sent in response to an
              * extended client hello message. However, see RFC 5746 exception below. We always include
              * the SCSV, so an Extended Server Hello is always allowed.
@@ -865,7 +864,7 @@ namespace Org.BouncyCastle.Tls
                      * associated ClientHello, it MUST abort the handshake with an unsupported_extension
                      * fatal alert.
                      */
-                    if (null == TlsUtilities.GetExtensionData(state.clientExtensions, extType))
+                    if (!TlsUtilities.HasExtension(state.clientExtensions, extType))
                     {
                         throw new TlsFatalAlert(AlertDescription.unsupported_extension,
                             "Unrequested extension in ServerHello: " + ExtensionType.GetText(extType));

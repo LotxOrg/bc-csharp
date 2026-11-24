@@ -17,6 +17,7 @@ using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto.Utilities;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities.Collections;
 using Org.BouncyCastle.X509;
@@ -337,31 +338,15 @@ namespace Org.BouncyCastle.Cms
             }
             else if (key is ECPrivateKeyParameters ecPrivKey)
             {
-                string algName = ecPrivKey.AlgorithmName;
-
-                if (algName == "ECGOST3410")
+                var ecGost3410Parameters = ECGost3410Utilities.GetEncodingParameters(ecPrivKey);
+                if (ecGost3410Parameters != null)
                 {
-                    encOid = CryptoProObjectIdentifiers.GostR3410x2001;
-                }
-                else if (ecPrivKey.Parameters is ECGost3410Parameters ecGost3410Parameters)
-                {
-                    var digestParamSet = ecGost3410Parameters.DigestParamSet;
-                    if (digestParamSet.Equals(RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256))
-                    {
-                        encOid = RosstandartObjectIdentifiers.id_tc26_gost_3410_12_256;
-                    }
-                    else if (digestParamSet.Equals(RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512))
-                    {
-                        encOid = RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512;
-                    }
-                    else
-                    {
-                        throw new ArgumentException("can't determine GOST3410 algorithm");
-                    }
+                    // TODO Check that digestOID is a GOST R 34.11 digest consistent with the key
+                    encOid = ECGost3410Utilities.GetKeyAlgorithmOid(ecGost3410Parameters);
                 }
                 else
                 {
-                    // TODO Should we insist on algName being one of "EC" or "ECDSA", as Java does?
+                    // TODO Should we insist on AlgorithmName being one of "EC" or "ECDSA", as Java does?
                     if (!m_ecAlgorithms.TryGetValue(digestOID, out encOid))
                         throw new ArgumentException("can't mix ECDSA with anything but SHA family digests");
                 }

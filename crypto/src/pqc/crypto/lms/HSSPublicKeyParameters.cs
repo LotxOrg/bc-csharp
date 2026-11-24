@@ -12,7 +12,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
         private readonly LmsPublicKeyParameters m_lmsPublicKey;
 
         public HssPublicKeyParameters(int l, LmsPublicKeyParameters lmsPublicKey)
-    	    : base(false)
+            : base(false)
         {
             m_level = l;
             m_lmsPublicKey = lmsPublicKey ?? throw new ArgumentNullException(nameof(lmsPublicKey));
@@ -39,7 +39,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
         {
             int L = BinaryReaders.ReadInt32BigEndian(binaryReader);
             if (L < 1 || L > 8)    // RFC 8554, Section 6.
-                throw new InvalidDataException($"L value of HSS public key out of range: {L}");
+                throw new IOException($"L value of HSS public key out of range: {L}");
 
             LmsPublicKeyParameters lmsPublicKey = LmsPublicKeyParameters.Parse(binaryReader);
             return new HssPublicKeyParameters(L, lmsPublicKey);
@@ -86,18 +86,11 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
                 .Build();
         }
 
-        public LmsContext GenerateLmsContext(byte[] sigEnc)
-        {
-            HssSignature signature;
-            try
-            {
-                signature = HssSignature.GetInstance(sigEnc, Level);
-            }
-            catch (IOException e)
-            {
-                throw new Exception("cannot parse signature", e);
-            }
+        public LmsContext GenerateLmsContext(byte[] sigEnc) =>
+            GenerateLmsContext(HssSignature.GetInstance(sigEnc, Level));
 
+        internal LmsContext GenerateLmsContext(HssSignature signature)
+        {
             LmsSignedPubKey[] signedPubKeys = signature.SignedPubKeys;
             LmsPublicKeyParameters key = LmsPublicKey;
             if (signedPubKeys.Length != 0)
@@ -108,30 +101,6 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             return key.GenerateOtsContext(signature.Signature).WithSignedPublicKeys(signedPubKeys);
         }
 
-        public bool Verify(LmsContext context)
-        {
-            LmsSignedPubKey[] sigKeys = context.SignedPubKeys;
-
-            if (sigKeys.Length != Level - 1)
-                return false;
-
-            LmsPublicKeyParameters key = LmsPublicKey;
-            bool failed = false;
-
-            for (int i = 0; i < sigKeys.Length; i++)
-            {
-                LmsSignature sig = sigKeys[i].Signature;
-                LmsPublicKeyParameters nextKey = sigKeys[i].PublicKey;
-
-                if (!Lms.VerifySignature(key, sig, nextKey.ToByteArray()))
-                {
-                    failed = true;
-                }
-
-                key = nextKey;
-            }
-
-            return !failed & key.Verify(context);
-        }
+        public bool Verify(LmsContext context) => LmsEngine.VerifyHssSignature(this, context);
     }
 }

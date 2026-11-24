@@ -1,77 +1,120 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 
-using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Tls.Crypto;
 using Org.BouncyCastle.Tls.Crypto.Impl.BC;
-using Org.BouncyCastle.Utilities;
-using Org.BouncyCastle.Utilities.Encoders;
 
 namespace Org.BouncyCastle.Tls.Tests
 {
+    /// <summary>
+    /// The configurable test client: trusts the test server certificates, authenticates with the RSA test client
+    /// certificate when asked, records what the handshake produced, and can be steered by a few knobs (set before the
+    /// handshake) so that a scenario need not subclass it. Scenarios that do subclass it have two seams,
+    /// <see cref="VerifyServerCertificate"/> and <see cref="SelectClientCredentials"/>.
+    /// </summary>
     internal class MockTlsClient
         : DefaultTlsClient
     {
+        protected string m_peerName = "TLS client";
+
         internal TlsSession m_session;
 
         internal MockTlsClient(TlsSession session)
-            : base(new BcTlsCrypto())
+            : this(new BcTlsCrypto(), session)
+        {
+        }
+
+        internal MockTlsClient(TlsCrypto crypto, TlsSession session)
+            : base(crypto)
         {
             this.m_session = session;
         }
 
-        protected override IList<ProtocolName> GetProtocolNames()
+        /*
+         * Knobs. Null means the library default.
+         */
+
+        /// <summary>Whether to add the extensions of <see cref="TlsTestUtilities.AddTestClientExtensions"/>.
+        /// </summary>
+        internal bool AddTestExtensions { get; set; } = true;
+
+        internal int HandshakeTimeoutMillis { get; set; } = 0;
+
+        internal int HandshakeResendTimeMillis { get; set; } = 1000;
+
+        /// <summary>The named groups to offer, whatever their roles.</summary>
+        internal int[] NamedGroups { get; set; } = null;
+
+        internal IList<ProtocolName> ProtocolNames { get; set; } =
+            new List<ProtocolName>{ ProtocolName.Http_1_1, ProtocolName.Http_2_Tls };
+
+        internal ProtocolVersion[] SupportedVersions { get; set; } = null;
+
+        /*
+         * What the handshake produced.
+         */
+
+        /// <summary>The <see cref="ConnectionEnd"/> that raised the first fatal alert, or -1 if there was none.
+        /// </summary>
+        internal int FirstFatalAlertConnectionEnd { get; private set; } = -1;
+
+        /// <summary>The <see cref="AlertDescription"/> of the first fatal alert, or -1 if there was none.</summary>
+        internal short FirstFatalAlertDescription { get; private set; } = -1;
+
+        internal ProtocolVersion NegotiatedVersion { get; private set; } = null;
+
+        /// <summary>Exported keying material, where extended_master_secret allows it.</summary>
+        internal byte[] TlsKeyingMaterial1 { get; private set; } = null;
+        internal byte[] TlsKeyingMaterial2 { get; private set; } = null;
+
+        internal byte[] TlsServerEndPoint { get; private set; } = null;
+        internal byte[] TlsUnique { get; private set; } = null;
+
+        public override int GetHandshakeTimeoutMillis() => HandshakeTimeoutMillis;
+
+        public override int GetHandshakeResendTimeMillis() => HandshakeResendTimeMillis;
+
+        protected override IList<ProtocolName> GetProtocolNames() => ProtocolNames;
+
+        public override TlsSession GetSessionToResume() => m_session;
+
+        protected override IList<int> GetSupportedGroups(IList<int> namedGroupRoles)
         {
-            var protocolNames = new List<ProtocolName>();
-            protocolNames.Add(ProtocolName.Http_1_1);
-            protocolNames.Add(ProtocolName.Http_2_Tls);
-            return protocolNames;
+            if (NamedGroups == null)
+                return base.GetSupportedGroups(namedGroupRoles);
+
+            var supportedGroups = new List<int>();
+            TlsUtilities.AddIfSupported(supportedGroups, Crypto, NamedGroups);
+            return supportedGroups;
         }
 
-        public override TlsSession GetSessionToResume()
-        {
-            return m_session;
-        }
+        protected override ProtocolVersion[] GetSupportedVersions() =>
+            SupportedVersions ?? base.GetSupportedVersions();
 
         public override void NotifyAlertRaised(short alertLevel, short alertDescription, string message,
             Exception cause)
         {
-            TextWriter output = (alertLevel == AlertLevel.fatal) ? Console.Error : Console.Out;
-            output.WriteLine("TLS client raised alert: " + AlertLevel.GetText(alertLevel)
-                + ", " + AlertDescription.GetText(alertDescription));
-            if (message != null)
-            {
-                output.WriteLine("> " + message);
-            }
-            if (cause != null)
-            {
-                output.WriteLine(cause);
-            }
+            NoteFatalAlert(ConnectionEnd.client, alertLevel, alertDescription);
+
+            TlsTestUtilities.LogAlert(m_peerName, true, alertLevel, alertDescription, message, cause);
         }
 
         public override void NotifyAlertReceived(short alertLevel, short alertDescription)
         {
-            TextWriter output = (alertLevel == AlertLevel.fatal) ? Console.Error : Console.Out;
-            output.WriteLine("TLS client received alert: " + AlertLevel.GetText(alertLevel)
-                + ", " + AlertDescription.GetText(alertDescription));
+            NoteFatalAlert(ConnectionEnd.server, alertLevel, alertDescription);
+
+            TlsTestUtilities.LogAlert(m_peerName, false, alertLevel, alertDescription, null, null);
         }
 
         public override IDictionary<int, byte[]> GetClientExtensions()
         {
-            if (m_context.SecurityParameters.ClientRandom == null)
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            TlsTestUtilities.CheckClientRandom(m_context);
 
-            var clientExtensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(
-                base.GetClientExtensions());
-
+            var clientExtensions = base.GetClientExtensions();
+            if (AddTestExtensions)
             {
-                /*
-                 * NOTE: If you are copying test code, do not blindly set these extensions in your own client.
-                 */
-                TlsExtensionsUtilities.AddMaxFragmentLengthExtension(clientExtensions, MaxFragmentLength.pow2_9);
-                TlsExtensionsUtilities.AddPaddingExtension(clientExtensions, m_context.Crypto.SecureRandom.Next(16));
-                TlsExtensionsUtilities.AddTruncatedHmacExtension(clientExtensions);
+                clientExtensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(clientExtensions);
+                TlsTestUtilities.AddTestClientExtensions(clientExtensions, m_context);
             }
             return clientExtensions;
         }
@@ -80,125 +123,75 @@ namespace Org.BouncyCastle.Tls.Tests
         {
             base.NotifyServerVersion(serverVersion);
 
-            Console.WriteLine("TLS client negotiated version " + serverVersion);
+            NegotiatedVersion = serverVersion;
+
+            TlsTestUtilities.Log(m_peerName + " negotiated version " + serverVersion);
         }
 
-        public override TlsAuthentication GetAuthentication()
-        {
-            return new MyTlsAuthentication(m_context);
-        }
+        public override TlsAuthentication GetAuthentication() => new MyTlsAuthentication(this);
 
         public override void NotifyHandshakeComplete()
         {
             base.NotifyHandshakeComplete();
 
-            ProtocolName protocolName = m_context.SecurityParameters.ApplicationProtocol;
-            if (protocolName != null)
+            SecurityParameters securityParameters = m_context.SecurityParameters;
+            if (securityParameters.IsExtendedMasterSecret)
             {
-                Console.WriteLine("Client ALPN: " + protocolName.GetUtf8Decoding());
+                TlsKeyingMaterial1 = m_context.ExportKeyingMaterial("BC_TLS_TESTS_1", null, 16);
+                TlsKeyingMaterial2 = m_context.ExportKeyingMaterial("BC_TLS_TESTS_2", new byte[8], 16);
             }
 
-            TlsSession newSession = m_context.Session;
-            if (newSession != null)
-            {
-                if (newSession.IsResumable)
-                {
-                    byte[] newSessionID = newSession.SessionID;
-                    string hex = ToHexString(newSessionID);
+            TlsServerEndPoint = m_context.ExportChannelBinding(ChannelBinding.tls_server_end_point);
+            TlsUnique = m_context.ExportChannelBinding(ChannelBinding.tls_unique);
 
-                    if (m_session != null && Arrays.AreEqual(m_session.SessionID, newSessionID))
-                    {
-                        Console.WriteLine("Client resumed session: " + hex);
-                    }
-                    else
-                    {
-                        Console.WriteLine("Client established session: " + hex);
-                    }
+            TlsTestUtilities.LogHandshakeComplete(m_peerName, m_context);
 
-                    this.m_session = newSession;
-                }
-
-                byte[] tlsServerEndPoint = m_context.ExportChannelBinding(ChannelBinding.tls_server_end_point);
-                if (null != tlsServerEndPoint)
-                {
-                    Console.WriteLine("Client 'tls-server-end-point': " + ToHexString(tlsServerEndPoint));
-                }
-
-                byte[] tlsUnique = m_context.ExportChannelBinding(ChannelBinding.tls_unique);
-                Console.WriteLine("Client 'tls-unique': " + ToHexString(tlsUnique));
-
-                byte[] tlsExporter = m_context.ExportChannelBinding(ChannelBinding.tls_exporter);
-                Console.WriteLine("Client 'tls-exporter': " + ToHexString(tlsExporter));
-            }
+            m_session = TlsTestUtilities.NoteSession(m_peerName, m_session, m_context);
         }
 
         public override void ProcessServerExtensions(IDictionary<int, byte[]> serverExtensions)
         {
-            if (m_context.SecurityParameters.ServerRandom == null)
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            TlsTestUtilities.CheckServerRandom(m_context);
 
             base.ProcessServerExtensions(serverExtensions);
         }
 
-        protected virtual string ToHexString(byte[] data)
+        /// <summary>Check the server's certificate; by default, that it is one of the test server certificates.
+        /// </summary>
+        protected virtual void VerifyServerCertificate(TlsServerCertificate serverCertificate)
         {
-            return data == null ? "(null)" : Hex.ToHexString(data);
+            TlsTestUtilities.VerifyServerCertificate(m_context, serverCertificate,
+                TlsTestUtilities.TrustedServerCertResources, checkSigAlgs: true);
         }
 
-        internal class MyTlsAuthentication
+        /// <summary>Choose the client credentials; by default, the RSA test client certificate.</summary>
+        protected virtual TlsCredentials SelectClientCredentials(CertificateRequest certificateRequest) =>
+            TlsTestUtilities.SelectRsaClientCredentials(m_context, certificateRequest);
+
+        private void NoteFatalAlert(int connectionEnd, short alertLevel, short alertDescription)
+        {
+            if (alertLevel == AlertLevel.fatal && FirstFatalAlertConnectionEnd == -1)
+            {
+                FirstFatalAlertConnectionEnd = connectionEnd;
+                FirstFatalAlertDescription = alertDescription;
+            }
+        }
+
+        private sealed class MyTlsAuthentication
             : TlsAuthentication
         {
-            private readonly TlsContext m_context;
+            private readonly MockTlsClient m_outer;
 
-            internal MyTlsAuthentication(TlsContext context)
+            internal MyTlsAuthentication(MockTlsClient outer)
             {
-                this.m_context = context;
+                m_outer = outer;
             }
 
-            public void NotifyServerCertificate(TlsServerCertificate serverCertificate)
-            {
-                TlsCertificate[] chain = serverCertificate.Certificate.GetCertificateList();
+            public void NotifyServerCertificate(TlsServerCertificate serverCertificate) =>
+                m_outer.VerifyServerCertificate(serverCertificate);
 
-                Console.WriteLine("TLS client received server certificate chain of length " + chain.Length);
-                for (int i = 0; i != chain.Length; i++)
-                {
-                    X509CertificateStructure entry = X509CertificateStructure.GetInstance(chain[i].GetEncoded());
-                    // TODO Create fingerprint based on certificate signature algorithm digest
-                    Console.WriteLine("    fingerprint:SHA-256 " + TlsTestUtilities.Fingerprint(entry) + " ("
-                        + entry.Subject + ")");
-                }
-
-                bool isEmpty = serverCertificate == null || serverCertificate.Certificate == null
-                    || serverCertificate.Certificate.IsEmpty;
-
-                if (isEmpty)
-                    throw new TlsFatalAlert(AlertDescription.bad_certificate);
-
-                string[] trustedCertResources = new string[]{ "x509-server-dsa.pem", "x509-server-ecdh.pem",
-                    "x509-server-ecdsa.pem", "x509-server-ed25519.pem", "x509-server-ed448.pem",
-                    "x509-server-ml_dsa_44.pem", "x509-server-ml_dsa_65.pem", "x509-server-ml_dsa_87.pem",
-                    "x509-server-rsa_pss_256.pem", "x509-server-rsa_pss_384.pem", "x509-server-rsa_pss_512.pem",
-                    "x509-server-rsa-enc.pem", "x509-server-rsa-sign.pem" };
-
-                TlsCertificate[] certPath = TlsTestUtilities.GetTrustedCertPath(m_context.Crypto, chain[0],
-                    trustedCertResources);
-
-                if (null == certPath)
-                    throw new TlsFatalAlert(AlertDescription.bad_certificate);
-
-                TlsUtilities.CheckPeerSigAlgs(m_context, certPath);
-            }
-
-            public TlsCredentials GetClientCredentials(CertificateRequest certificateRequest)
-            {
-                short[] certificateTypes = certificateRequest.CertificateTypes;
-                if (certificateTypes == null || !Arrays.Contains(certificateTypes, ClientCertificateType.rsa_sign))
-                    return null;
-
-                return TlsTestUtilities.LoadSignerCredentials(m_context,
-                    certificateRequest.SupportedSignatureAlgorithms, SignatureAlgorithm.rsa, "x509-client-rsa.pem",
-                    "x509-client-key-rsa.pem");
-            }
-        };
+            public TlsCredentials GetClientCredentials(CertificateRequest certificateRequest) =>
+                m_outer.SelectClientCredentials(certificateRequest);
+        }
     }
 }

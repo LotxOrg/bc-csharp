@@ -20,14 +20,17 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             m_digest = digest;
         }
 
+        // TODO[api] Remove
         public byte[] GetI() => Arrays.Clone(m_I);
 
+        // TODO[api] Remove
         public byte[] GetMasterSeed() => Arrays.Clone(m_masterSeed);
 
         public int J { get; set; }
 
         public int Q { get; set; }
 
+        // TODO[api] Refactor (at promotion) to match the bc-java param order (and overloads)
         public byte[] DeriveSeed(bool incJ, byte[] target, int offset)
         {
             if (target.Length - offset < m_digest.GetDigestSize())
@@ -35,9 +38,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
 
             int q = Q, j = J;
 
-#pragma warning disable CS0618 // Type or member is obsolete
-            m_digest.BlockUpdate(I, 0, I.Length);
-#pragma warning restore CS0618 // Type or member is obsolete
+            m_digest.BlockUpdate(m_I, 0, m_I.Length);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
             Span<byte> qj = stackalloc byte[7];
@@ -56,9 +57,7 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             m_digest.Update(0xFF);
 #endif
 
-#pragma warning disable CS0618 // Type or member is obsolete
             m_digest.BlockUpdate(m_masterSeed, 0, m_masterSeed.Length);
-#pragma warning restore CS0618 // Type or member is obsolete
 
             m_digest.DoFinal(target, offset); // Digest resets here.
 

@@ -128,7 +128,7 @@ namespace Org.BouncyCastle.Crypto.Engines
             do
             {
                 k = NextK();
-                kPB = ((ECPublicKeyParameters)mECKey).Q.Multiply(k).Normalize();
+                kPB = ECAlgorithms.MultiplySecret(((ECPublicKeyParameters)mECKey).Q, k).Normalize();
 
                 Kdf(mDigest, kPB, c2);
             }
@@ -177,8 +177,7 @@ namespace Org.BouncyCastle.Crypto.Engines
             if (s.IsInfinity)
                 throw new InvalidCipherTextException("[h]C1 at infinity");
 
-            c1P = c1P.Multiply(((ECPrivateKeyParameters)mECKey).D).Normalize();
-
+            c1P = ECAlgorithms.MultiplySecret(c1P, ((ECPrivateKeyParameters)mECKey).D).Normalize();
             int c2Length = input.Length - c1Length - digestSize;
             byte[] c2 = new byte[c2Length];
 

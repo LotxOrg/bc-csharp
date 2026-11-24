@@ -6,6 +6,7 @@ using Org.BouncyCastle.Asn1.CryptoPro;
 using Org.BouncyCastle.Asn1.EdEC;
 using Org.BouncyCastle.Asn1.Rosstandart;
 using Org.BouncyCastle.Asn1.Sec;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Agreement;
@@ -109,6 +110,12 @@ namespace Org.BouncyCastle.Security
             throw new SecurityUtilityException("Basic Agreement OID not recognised.");
         }
 
+        // TODO Distinguish 'WithKdf' based on algID.Algorithm and auto-use parameters
+        //public static IBasicAgreement GetBasicAgreement(AlgorithmIdentifier algID)
+        //{
+        //    AlgorithmIdentifier wrapAlgID = AlgorithmIdentifier.GetInstance(algID.Parameters);
+        //}
+
         public static IBasicAgreement GetBasicAgreement(string algorithm)
         {
             if (algorithm == null)
@@ -141,22 +148,25 @@ namespace Org.BouncyCastle.Security
         }
 
         public static IBasicAgreement GetBasicAgreementWithKdf(DerObjectIdentifier agreeAlgOid,
-            DerObjectIdentifier wrapAlgOid)
+            AlgorithmIdentifier wrapAlgID)
         {
-            return GetBasicAgreementWithKdf(agreeAlgOid, wrapAlgOid?.Id);
+            return GetBasicAgreementWithKdf(agreeAlgOid, wrapAlgID, rawUkm: false);
         }
 
-        // TODO[api] Change parameter name to 'agreeAlgOid'
-        public static IBasicAgreement GetBasicAgreementWithKdf(DerObjectIdentifier oid, string wrapAlgorithm)
+        /// <remarks>If <paramref name="rawUkm"/> is true, the KDF is given the user keying material itself as its
+        /// SharedInfo, in place of the ECC-CMS-SharedInfo of RFC 5753 sec. 7.2. NOT conformant; only for reading
+        /// legacy messages.</remarks>
+        internal static IBasicAgreement GetBasicAgreementWithKdf(DerObjectIdentifier agreeAlgOid,
+            AlgorithmIdentifier wrapAlgID, bool rawUkm)
         {
-            if (oid == null)
-                throw new ArgumentNullException(nameof(oid));
-            if (wrapAlgorithm == null)
-                throw new ArgumentNullException(nameof(wrapAlgorithm));
+            if (agreeAlgOid == null)
+                throw new ArgumentNullException(nameof(agreeAlgOid));
+            if (wrapAlgID == null)
+                throw new ArgumentNullException(nameof(wrapAlgID));
 
-            if (AlgorithmOidMap.TryGetValue(oid, out var mechanism))
+            if (AlgorithmOidMap.TryGetValue(agreeAlgOid, out var mechanism))
             {
-                var basicAgreement = GetBasicAgreementWithKdfForMechanism(mechanism, wrapAlgorithm);
+                var basicAgreement = GetBasicAgreementWithKdfForMechanism(mechanism, wrapAlgID, rawUkm);
                 if (basicAgreement != null)
                     return basicAgreement;
             }
@@ -164,6 +174,21 @@ namespace Org.BouncyCastle.Security
             throw new SecurityUtilityException("Basic Agreement (with KDF) OID not recognised.");
         }
 
+        [Obsolete("Use '(DerObjectIdentifier, AlgorithmIdentifier)' instead")]
+        public static IBasicAgreement GetBasicAgreementWithKdf(DerObjectIdentifier agreeAlgOid,
+            DerObjectIdentifier wrapAlgOid)
+        {
+            return GetBasicAgreementWithKdf(agreeAlgOid, DHKdfParameters.WithDefaultParameters(wrapAlgOid));
+        }
+
+        // TODO[api] Change parameter name to 'agreeAlgOid'
+        [Obsolete("Use '(DerObjectIdentifier, AlgorithmIdentifier)' instead")]
+        public static IBasicAgreement GetBasicAgreementWithKdf(DerObjectIdentifier oid, string wrapAlgorithm)
+        {
+            return GetBasicAgreementWithKdf(oid, DHKdfParameters.WithDefaultParameters(wrapAlgorithm));
+        }
+
+        [Obsolete("Use '(DerObjectIdentifier, AlgorithmIdentifier)' instead")]
         public static IBasicAgreement GetBasicAgreementWithKdf(string agreeAlgorithm, string wrapAlgorithm)
         {
             if (agreeAlgorithm == null)
@@ -171,49 +196,52 @@ namespace Org.BouncyCastle.Security
             if (wrapAlgorithm == null)
                 throw new ArgumentNullException(nameof(wrapAlgorithm));
 
+            AlgorithmIdentifier wrapAlgID = DHKdfParameters.WithDefaultParameters(wrapAlgorithm);
+
             string mechanism = GetMechanism(agreeAlgorithm) ?? agreeAlgorithm.ToUpperInvariant();
 
-            var basicAgreement = GetBasicAgreementWithKdfForMechanism(mechanism, wrapAlgorithm);
+            var basicAgreement = GetBasicAgreementWithKdfForMechanism(mechanism, wrapAlgID, rawUkm: false);
             if (basicAgreement != null)
                 return basicAgreement;
 
             throw new SecurityUtilityException("Basic Agreement (with KDF) " + agreeAlgorithm + " not recognised.");
         }
 
-        private static IBasicAgreement GetBasicAgreementWithKdfForMechanism(string mechanism, string wrapAlgorithm)
+        private static IBasicAgreement GetBasicAgreementWithKdfForMechanism(string mechanism,
+            AlgorithmIdentifier wrapAlgID, bool rawUkm)
         {
             if (mechanism == "ECDHWITHSHA1KDF")
-                return new ECDHWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-1"));
+                return new ECDHWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-1", rawUkm));
             if (mechanism == "ECDHWITHSHA224KDF")
-                return new ECDHWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-224"));
+                return new ECDHWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-224", rawUkm));
             if (mechanism == "ECDHWITHSHA256KDF")
-                return new ECDHWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-256"));
+                return new ECDHWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-256", rawUkm));
             if (mechanism == "ECDHWITHSHA384KDF")
-                return new ECDHWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-384"));
+                return new ECDHWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-384", rawUkm));
             if (mechanism == "ECDHWITHSHA512KDF")
-                return new ECDHWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-512"));
+                return new ECDHWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-512", rawUkm));
 
             if (mechanism == "ECCDHWITHSHA1KDF")
-                return new ECDHCWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-1"));
+                return new ECDHCWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-1", rawUkm));
             if (mechanism == "ECCDHWITHSHA224KDF")
-                return new ECDHCWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-224"));
+                return new ECDHCWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-224", rawUkm));
             if (mechanism == "ECCDHWITHSHA256KDF")
-                return new ECDHCWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-256"));
+                return new ECDHCWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-256", rawUkm));
             if (mechanism == "ECCDHWITHSHA384KDF")
-                return new ECDHCWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-384"));
+                return new ECDHCWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-384", rawUkm));
             if (mechanism == "ECCDHWITHSHA512KDF")
-                return new ECDHCWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-512"));
+                return new ECDHCWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-512", rawUkm));
 
             if (mechanism == "ECMQVWITHSHA1KDF")
-                return new ECMqvWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-1"));
+                return new ECMqvWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-1", rawUkm));
             if (mechanism == "ECMQVWITHSHA224KDF")
-                return new ECMqvWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-224"));
+                return new ECMqvWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-224", rawUkm));
             if (mechanism == "ECMQVWITHSHA256KDF")
-                return new ECMqvWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-256"));
+                return new ECMqvWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-256", rawUkm));
             if (mechanism == "ECMQVWITHSHA384KDF")
-                return new ECMqvWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-384"));
+                return new ECMqvWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-384", rawUkm));
             if (mechanism == "ECMQVWITHSHA512KDF")
-                return new ECMqvWithKdfBasicAgreement(wrapAlgorithm, CreateECDHKekGenerator("SHA-512"));
+                return new ECMqvWithKdfBasicAgreement(wrapAlgID, CreateECDHKekGenerator("SHA-512", rawUkm));
 
             return null;
         }
@@ -232,7 +260,7 @@ namespace Org.BouncyCastle.Security
 
             throw new SecurityUtilityException("Raw Agreement OID not recognised.");
         }
- 
+
         public static IRawAgreement GetRawAgreement(string algorithm)
         {
             if (algorithm == null)
@@ -281,8 +309,15 @@ namespace Org.BouncyCastle.Security
             return null;
         }
 
-        private static IDerivationFunction CreateECDHKekGenerator(string digestName) =>
-            new ECDHKekGenerator(DigestUtilities.GetDigest(digestName));
+        private static IDerivationFunction CreateECDHKekGenerator(string digestName, bool rawUkm)
+        {
+            IDigest digest = DigestUtilities.GetDigest(digestName);
+
+            if (rawUkm)
+                return new RawUkmKekGenerator(digest);
+
+            return new ECDHKekGenerator(digest);
+        }
 
         private static IRawAgreement CreateECVkoAgreeement(string digestName) =>
             new ECVkoAgreement(DigestUtilities.GetDigest(digestName));

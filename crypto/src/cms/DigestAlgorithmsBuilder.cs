@@ -13,17 +13,19 @@ namespace Org.BouncyCastle.Cms
         private readonly List<AlgorithmIdentifier> m_ordered = new List<AlgorithmIdentifier>();
         private readonly HashSet<UniqueAlgID> m_unique = new HashSet<UniqueAlgID>();
         private readonly IDigestAlgorithmFinder m_digestAlgorithmFinder;
+        private bool m_addedExistingOnly = true;
 
         internal DigestAlgorithmsBuilder(IDigestAlgorithmFinder digestAlgorithmFinder)
         {
             m_digestAlgorithmFinder = digestAlgorithmFinder;
         }
 
-        // TODO[cms] Currently relies on caller to only use this after any 'AddExisting' calls - enforce?
         internal bool Add(AlgorithmIdentifier algID)
         {
             if (algID == null)
                 throw new ArgumentNullException(nameof(algID));
+
+            m_addedExistingOnly = false;
 
             return ImplAdd(GetCanonical(algID));
         }
@@ -32,6 +34,8 @@ namespace Org.BouncyCastle.Cms
         {
             if (algID == null)
                 throw new ArgumentNullException(nameof(algID));
+            if (!m_addedExistingOnly)
+                throw new InvalidOperationException("Existing digests must be added before any new ones");
 
             // Preserve the absent parameters format of existing digest algorithms
             return ImplAdd(algID);

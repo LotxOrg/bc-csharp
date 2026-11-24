@@ -168,7 +168,7 @@ namespace Org.BouncyCastle.Tls
 
                 recordLayer.InitHeartbeat(state.heartbeat, HeartbeatMode.peer_allowed_to_send == state.heartbeatPolicy);
 
-                return new DtlsTransport(recordLayer, server.IgnoreCorruptDtlsRecords);
+                return new DtlsTransport(recordLayer);
             }
 
             var serverSupplementalData = server.GetServerSupplementalData();
@@ -314,7 +314,7 @@ namespace Org.BouncyCastle.Tls
                         /*
                          * RFC 5246 If no suitable certificate is available, the client MUST send a
                          * certificate message containing no certificates.
-                         * 
+                         *
                          * NOTE: In previous RFCs, this was SHOULD instead of MUST.
                          */
                         throw new TlsFatalAlert(AlertDescription.unexpected_message);
@@ -412,7 +412,7 @@ namespace Org.BouncyCastle.Tls
 
             recordLayer.InitHeartbeat(state.heartbeat, HeartbeatMode.peer_allowed_to_send == state.heartbeatPolicy);
 
-            return new DtlsTransport(recordLayer, server.IgnoreCorruptDtlsRecords);
+            return new DtlsTransport(recordLayer);
         }
 
         /// <exception cref="IOException"/>
@@ -588,6 +588,11 @@ namespace Org.BouncyCastle.Tls
                     :   server.GetServerExtensions();
 
                 state.serverExtensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(sessionServerExtensions);
+
+                if (resumedSession)
+                {
+                    TlsExtensionsUtilities.RemoveStatusRequestExtensions(state.serverExtensions);
+                }
             }
 
             server.GetServerExtensionsForConnection(state.serverExtensions);
@@ -599,9 +604,8 @@ namespace Org.BouncyCastle.Tls
                  */
                 if (securityParameters.IsSecureRenegotiation)
                 {
-                    byte[] serverRenegExtData = TlsUtilities.GetExtensionData(state.serverExtensions,
+                    bool noRenegExt = !TlsUtilities.HasExtension(state.serverExtensions,
                         ExtensionType.renegotiation_info);
-                    bool noRenegExt = (null == serverRenegExtData);
 
                     if (noRenegExt)
                     {
@@ -774,9 +778,6 @@ namespace Org.BouncyCastle.Tls
         /// <exception cref="IOException"/>
         protected virtual void NotifyClientCertificate(ServerHandshakeState state, Certificate clientCertificate)
         {
-            if (null == state.certificateRequest)
-                throw new TlsFatalAlert(AlertDescription.internal_error);
-
             TlsUtilities.ProcessClientCertificate(state.serverContext, clientCertificate, state.keyExchange,
                 state.server);
         }
@@ -880,7 +881,7 @@ namespace Org.BouncyCastle.Tls
             server.NotifyOfferedCipherSuites(offeredCipherSuites);
 
             /*
-             * TODO[resumption] Check RFC 7627 5.4. for required behaviour 
+             * TODO[resumption] Check RFC 7627 5.4. for required behaviour
              */
 
             byte[] clientRenegExtData = TlsUtilities.GetExtensionData(clientHelloExtensions,

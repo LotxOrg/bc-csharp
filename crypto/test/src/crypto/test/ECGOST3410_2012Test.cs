@@ -22,6 +22,8 @@ namespace Org.BouncyCastle.Crypto.Tests
     public class ECGost3410_2012Test
         : SimpleTest
     {
+        private readonly SecureRandom Random = new SecureRandom();
+
         public override string Name
         {
             get { return "ECGOST3410-2012"; }
@@ -30,11 +32,13 @@ namespace Org.BouncyCastle.Crypto.Tests
         public SimpleTestResult EncodeRecodePublicKey()
         {
             DerObjectIdentifier oid = ECGost3410NamedCurves.GetOid("Tc26-Gost-3410-12-512-paramSetA");
-            ECNamedDomainParameters ecp = new ECNamedDomainParameters(oid, ECGost3410NamedCurves.GetByOid(oid));
-            ECGost3410Parameters gostParams = new ECGost3410Parameters(ecp, oid, RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512, null);
-            ECKeyGenerationParameters paramameters = new ECKeyGenerationParameters(gostParams, new SecureRandom());
+            var gostParams = new GostR3410x2012PublicKeyParameters(oid,
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
+            var ecGost3410Parameters = ECGost3410Parameters.FromPublicKeyParameters(gostParams);
+
+            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(ecGost3410Parameters, Random);
             ECKeyPairGenerator engine = new ECKeyPairGenerator();
-            engine.Init(paramameters);
+            engine.Init(parameters);
             AsymmetricCipherKeyPair pair = engine.GenerateKeyPair();
 
             ECPublicKeyParameters generatedKeyParameters = (ECPublicKeyParameters)pair.Public;
@@ -42,7 +46,7 @@ namespace Org.BouncyCastle.Crypto.Tests
 
             //
             // Continuously encode/decode the key and check for loss of information.
-            //          
+            //
             for (int t = 0; t < 3; t++)
             {
                 SubjectPublicKeyInfo info = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(keyParameters);
@@ -118,9 +122,11 @@ namespace Org.BouncyCastle.Crypto.Tests
         private SimpleTestResult EncodeRecodePrivateKey()
         {
             DerObjectIdentifier oid = ECGost3410NamedCurves.GetOid("Tc26-Gost-3410-12-512-paramSetA");
-            ECNamedDomainParameters ecp = new ECNamedDomainParameters(oid, ECGost3410NamedCurves.GetByOid(oid));
-            ECGost3410Parameters gostParams = new ECGost3410Parameters(ecp, oid, RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512, null);
-            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(gostParams, new SecureRandom());
+            var gostParams = new GostR3410x2012PublicKeyParameters(oid,
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
+            var ecGost3410Parameters = ECGost3410Parameters.FromPublicKeyParameters(gostParams);
+
+            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(ecGost3410Parameters, Random);
             ECKeyPairGenerator engine = new ECKeyPairGenerator();
             engine.Init(parameters);
             AsymmetricCipherKeyPair pair = engine.GenerateKeyPair();
@@ -338,9 +344,10 @@ namespace Org.BouncyCastle.Crypto.Tests
         public SimpleTestResult EncodeDecodePrivateLW(string oidStr, DerObjectIdentifier digest)
         {
             DerObjectIdentifier oid = ECGost3410NamedCurves.GetOid(oidStr);
-            ECNamedDomainParameters ecp = new ECNamedDomainParameters(oid, ECGost3410NamedCurves.GetByOid(oid));
-            ECGost3410Parameters gostParams = new ECGost3410Parameters(ecp, oid, digest, null);
-            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(gostParams, new SecureRandom());
+            var gostParams = new GostR3410x2012PublicKeyParameters(oid, digest);
+            var ecGost3410Parameters = ECGost3410Parameters.FromPublicKeyParameters(gostParams);
+
+            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(ecGost3410Parameters, Random);
             ECKeyPairGenerator engine = new ECKeyPairGenerator();
             engine.Init(parameters);
             AsymmetricCipherKeyPair pair = engine.GenerateKeyPair();
@@ -410,7 +417,8 @@ namespace Org.BouncyCastle.Crypto.Tests
                 return new SimpleTestResult(false, "N does not match");
             }
 
-            if (!Arrays.AreEqual(recoveredKeyParameters.Parameters.GetSeed(), generatedKeyParameters.Parameters.GetSeed()))
+            if (!Arrays.AreEqual(recoveredKeyParameters.Parameters.GetSeed(),
+                generatedKeyParameters.Parameters.GetSeed()))
             {
                 return new SimpleTestResult(false, "Seed does not match");
             }
@@ -421,9 +429,10 @@ namespace Org.BouncyCastle.Crypto.Tests
         public SimpleTestResult EncodeDecodePublicLW(string oidStr, DerObjectIdentifier digest)
         {
             DerObjectIdentifier oid = ECGost3410NamedCurves.GetOid(oidStr);
-            ECNamedDomainParameters ecp = new ECNamedDomainParameters(oid, ECGost3410NamedCurves.GetByOid(oid));
-            ECGost3410Parameters gostParams = new ECGost3410Parameters(ecp, oid, digest, null);
-            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(gostParams, new SecureRandom());
+            var gostParams = new GostR3410x2012PublicKeyParameters(oid, digest);
+            var ecGostParameters = ECGost3410Parameters.FromPublicKeyParameters(gostParams);
+
+            ECKeyGenerationParameters parameters = new ECKeyGenerationParameters(ecGostParameters, Random);
             ECKeyPairGenerator engine = new ECKeyPairGenerator();
             engine.Init(parameters);
             AsymmetricCipherKeyPair pair = engine.GenerateKeyPair();
@@ -493,7 +502,8 @@ namespace Org.BouncyCastle.Crypto.Tests
                 return new SimpleTestResult(false, "N does not match");
             }
 
-            if (!Arrays.AreEqual(recoveredKeyParameters.Parameters.GetSeed(), generatedKeyParameters.Parameters.GetSeed()))
+            if (!Arrays.AreEqual(recoveredKeyParameters.Parameters.GetSeed(),
+                generatedKeyParameters.Parameters.GetSeed()))
             {
                 return new SimpleTestResult(false, "Seed does not match");
             }
@@ -504,25 +514,29 @@ namespace Org.BouncyCastle.Crypto.Tests
         [Test]
         public override void PerformTest()
         {
-            SimpleTestResult str = EncodeDecodePublicLW("Tc26-Gost-3410-12-512-paramSetA", RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
+            SimpleTestResult str = EncodeDecodePublicLW("Tc26-Gost-3410-12-512-paramSetA",
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
             if (!str.IsSuccessful())
             {
                 Fail(str.ToString(), str.GetException());
             }
 
-            str = EncodeDecodePrivateLW("Tc26-Gost-3410-12-512-paramSetA", RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
+            str = EncodeDecodePrivateLW("Tc26-Gost-3410-12-512-paramSetA",
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512);
             if (!str.IsSuccessful())
             {
                 Fail(str.ToString(), str.GetException());
             }
 
-            str = EncodeDecodePublicLW("Tc26-Gost-3410-12-256-paramSetA", RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256);
+            str = EncodeDecodePublicLW("Tc26-Gost-3410-12-256-paramSetA",
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256);
             if (!str.IsSuccessful())
             {
                 Fail(str.ToString(), str.GetException());
             }
 
-            str = EncodeDecodePrivateLW("Tc26-Gost-3410-12-256-paramSetA", RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256);
+            str = EncodeDecodePrivateLW("Tc26-Gost-3410-12-256-paramSetA",
+                RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256);
             if (!str.IsSuccessful())
             {
                 Fail(str.ToString(), str.GetException());

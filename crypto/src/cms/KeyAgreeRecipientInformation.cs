@@ -14,6 +14,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
+using Org.BouncyCastle.Utilities;
 
 namespace Org.BouncyCastle.Cms
 {
@@ -68,7 +69,7 @@ namespace Org.BouncyCastle.Cms
             m_encryptedKey = encryptedKey;
         }
 
-        private AsymmetricKeyParameter GetSenderPublicKey(AsymmetricKeyParameter receiverPrivateKey,
+        private static AsymmetricKeyParameter GetSenderPublicKey(AsymmetricKeyParameter receiverPrivateKey,
             OriginatorIdentifierOrKey originator)
         {
             OriginatorPublicKey originatorKey = originator.OriginatorKey;
@@ -100,29 +101,44 @@ namespace Org.BouncyCastle.Cms
             return PublicKeyFactory.CreateKey(pubInfo);
         }
 
-        private AsymmetricKeyParameter GetPublicKeyFromOriginatorID(
-            OriginatorID origID)
+        private static AsymmetricKeyParameter GetPublicKeyFromOriginatorID(OriginatorID origID)
         {
             // TODO Support all alternatives for OriginatorIdentifierOrKey
             // see RFC 3852 6.2.2
             throw new CmsException("No support for 'originator' as IssuerAndSerialNumber or SubjectKeyIdentifier");
         }
 
-        private static KeyParameter CalculateAgreedWrapKey(AlgorithmIdentifier agreeAlgID,
+        private static KeyParameter CalculateAgreedWrapKey(DerObjectIdentifier agreeAlgOid,
             AlgorithmIdentifier wrapAlgID, AsymmetricKeyParameter senderPublicKey, Asn1OctetString userKeyingMaterial,
-            AsymmetricKeyParameter receiverPrivateKey)
+            AsymmetricKeyParameter receiverPrivateKey, bool rawUkm)
         {
-            DerObjectIdentifier agreeAlgOid = agreeAlgID.Algorithm;
-
             ICipherParameters senderPublicParams = senderPublicKey;
             ICipherParameters receiverPrivateParams = receiverPrivateKey;
 
+            // RFC 8418 sec. 2.2: for the HKDF schemes a ukm is both the entityUInfo of the
+            // ECC-CMS-SharedInfo and the HKDF salt
+            if (userKeyingMaterial != null && CmsUtilities.IsHkdf(agreeAlgOid))
+            {
+                // TODO[cms] Add HKDF support, with some way to handle UKM
+                throw new NotImplementedException();
+            }
+
+            byte[] kdfUkm = userKeyingMaterial?.GetOctets();
+
             if (CmsUtilities.IsMqv(agreeAlgOid))
             {
-                MQVuserKeyingMaterial ukm = MQVuserKeyingMaterial.GetInstance(userKeyingMaterial.GetOctets());
+                // RFC 5753 sec. 3.2.1: for 1-Pass ECMQV the ukm MUST be present
+                if (userKeyingMaterial == null)
+                    throw new CmsException("User keying material must be present for MQV.");
+
+                // The MQVuserKeyingMaterial is received DER-encoded in KeyAgreeRecipientInfo.ukm
+                MQVuserKeyingMaterial mqvUkm = MQVuserKeyingMaterial.GetInstance(userKeyingMaterial.GetOctets());
+
+                // RFC 5753 7.2: for ECMQV, entityUInfo is the addedukm (not the ukm field)
+                kdfUkm = mqvUkm.AddedUkm?.GetOctets();
 
                 AsymmetricKeyParameter ephemeralKey = GetPublicKeyFromOriginatorPublicKey(
-                    receiverPrivateKey, ukm.EphemeralPublicKey);
+                    receiverPrivateKey, mqvUkm.EphemeralPublicKey);
 
                 senderPublicParams = new MqvPublicParameters(
                     (ECPublicKeyParameters)senderPublicParams,
@@ -131,22 +147,14 @@ namespace Org.BouncyCastle.Cms
                     (ECPrivateKeyParameters)receiverPrivateParams,
                     (ECPrivateKeyParameters)receiverPrivateParams);
             }
-            else
-            {
-                // TODO[cms] bc-java has other consumers of userKeyingMaterial in EC, GOST, RFC2631 branches
-            }
 
-            /*
-             * TODO[cms] This seems like the place where the original wrapAlgID.Parameters gets lost so that
-             * ECDHKekGenerator ultimately has to rebuild the AlgorithmIdentifier that it gives to ECC_CMS_SharedInfo.
-             * This leads to broken signatures (especially for AES, since it always rebuilds with ASN.1 NULL).
-             * Instead, the full wrapAlgID needs to propagate throughout.
-             */
-            DerObjectIdentifier wrapAlgOid = wrapAlgID.Algorithm;
-            IBasicAgreement agreement = AgreementUtilities.GetBasicAgreementWithKdf(agreeAlgOid, wrapAlgOid);
+            receiverPrivateParams = ParameterUtilities.WithUkm(receiverPrivateParams, kdfUkm);
+
+            IBasicAgreement agreement = AgreementUtilities.GetBasicAgreementWithKdf(agreeAlgOid, wrapAlgID, rawUkm);
             agreement.Init(receiverPrivateParams);
             BigInteger agreedValue = agreement.CalculateAgreement(senderPublicParams);
 
+            DerObjectIdentifier wrapAlgOid = wrapAlgID.Algorithm;
             int wrapKeySize = GeneratorUtilities.GetDefaultKeySize(wrapAlgOid) / 8;
             byte[] wrapKeyBytes = X9IntegerConverter.IntegerToBytes(agreedValue, wrapKeySize);
             return ParameterUtilities.CreateKeyParameter(wrapAlgOid, wrapKeyBytes);
@@ -170,17 +178,72 @@ namespace Org.BouncyCastle.Cms
 
                 AsymmetricKeyParameter senderPublicKey = GetSenderPublicKey(receiverPrivateKey, m_info.Originator);
 
-                KeyParameter agreedWrapKey = CalculateAgreedWrapKey(keyEncAlg, wrapAlgID, senderPublicKey,
-                    m_info.UserKeyingMaterial, receiverPrivateKey);
-
+                DerObjectIdentifier agreeAlgOid = keyEncAlg.Algorithm;
                 DerObjectIdentifier wrapAlgOid = wrapAlgID.Algorithm;
+
+                KeyParameter agreedWrapKey = CalculateAgreedWrapKey(agreeAlgOid, wrapAlgID, senderPublicKey,
+                    m_info.UserKeyingMaterial, receiverPrivateKey, rawUkm: false);
+
                 if (CryptoProObjectIdentifiers.id_Gost28147_89_None_KeyWrap.Equals(wrapAlgOid) ||
                     CryptoProObjectIdentifiers.id_Gost28147_89_CryptoPro_KeyWrap.Equals(wrapAlgOid))
                 {
                     // TODO[cms] GOST key wrapping
                 }
 
-                return UnwrapSessionKey(wrapAlgOid, agreedWrapKey);
+                try
+                {
+                    return UnwrapSessionKey(wrapAlgOid, agreedWrapKey);
+                }
+                catch (InvalidCipherTextException)
+                    when (Properties.GetBoolean(Properties.CmsAllowLegacyKeyAgreeKdf, true))
+                {
+                    // TODO[api] Consider defaulting CmsAllowLegacyKeyAgreeKdf to false (or removing the retries)
+
+                    /*
+                     * bc-csharp until 2.7.0 derived the KEK as though the key-wrap AlgorithmIdentifier carried NULL
+                     * parameters, even when it was encoded with absent parameters (github bc-csharp #697). Retry with
+                     * that derivation so that messages from those versions remain readable.
+                     */
+                    if (wrapAlgID.Parameters == null)
+                    {
+                        try
+                        {
+                            var legacyWrapAlgID = new AlgorithmIdentifier(wrapAlgOid, DerNull.Instance);
+
+                            KeyParameter legacyWrapKey = CalculateAgreedWrapKey(agreeAlgOid, legacyWrapAlgID,
+                                senderPublicKey, m_info.UserKeyingMaterial, receiverPrivateKey, rawUkm: false);
+
+                            return UnwrapSessionKey(wrapAlgOid, legacyWrapKey);
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore any exception during the retry
+                        }
+                    }
+
+                    /*
+                     * Some senders give the KDF the ukm itself (for 1-Pass ECMQV, the addedukm, or nothing) as its
+                     * SharedInfo, in place of the ECC-CMS-SharedInfo of RFC 5753 sec. 7.2; among them bc-java 1.53 to
+                     * 1.86 for ECMQV. Retry with that derivation, as bc-java does, so that such messages are readable.
+                     */
+                    if (m_info.UserKeyingMaterial != null)
+                    {
+                        try
+                        {
+                            KeyParameter rawUkmWrapKey = CalculateAgreedWrapKey(agreeAlgOid, wrapAlgID,
+                                senderPublicKey, m_info.UserKeyingMaterial, receiverPrivateKey, rawUkm: true);
+
+                            return UnwrapSessionKey(wrapAlgOid, rawUkmWrapKey);
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore any exception during the retry
+                        }
+                    }
+
+                    // Re-throw original InvalidCipherTextException
+                    throw;
+                }
             }
             catch (SecurityUtilityException e)
             {
@@ -189,6 +252,10 @@ namespace Org.BouncyCastle.Cms
             catch (InvalidKeyException e)
             {
                 throw new CmsException("key invalid in message.", e);
+            }
+            catch (CmsException)
+            {
+                throw;
             }
             catch (Exception e)
             {
@@ -206,10 +273,10 @@ namespace Org.BouncyCastle.Cms
             ICipherParameters key)
         {
             if (!(key is AsymmetricKeyParameter receiverPrivateKey))
-                throw new ArgumentException("KeyAgreement requires asymmetric key", "key");
+                throw new ArgumentException("KeyAgreement requires asymmetric key", nameof(key));
 
             if (!receiverPrivateKey.IsPrivate)
-                throw new ArgumentException("Expected private key", "key");
+                throw new ArgumentException("Expected private key", nameof(key));
 
             KeyParameter sKey = GetSessionKey(receiverPrivateKey);
 

@@ -93,13 +93,13 @@ namespace Org.BouncyCastle.Pkix
                 return null;
 
             // step out, the certificate is not allowed to appear in a certification chain
-            if (pkixParams.GetExcludedCerts().Contains(tbvCert))
+            if (pkixParams.IsExcludedCert(tbvCert))
                 return null;
 
             // test if certificate path exceeds maximum length
             if (pkixParams.MaxPathLength != -1)
             {
-                if (tbvPath.Count - 1 > pkixParams.MaxPathLength)
+                if (PkixCertPathValidatorUtilities.CountIntermediates(tbvPath, tbvCert) > pkixParams.MaxPathLength)
                     return null;
             }
 

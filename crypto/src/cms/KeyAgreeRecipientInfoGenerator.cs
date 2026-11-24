@@ -95,13 +95,35 @@ namespace Org.BouncyCastle.Cms
             //    keyEncAlgParams = new Gost2814789KeyWrapParameters(CryptoProObjectIdentifiers.ID_Gost28147_89_CryptoPro_A_ParamSet);
             //}
 
+            if (m_recipientIDs.Count < 1)
+                throw new CmsException("No recipients associated with generator");
+
+            var kdfUkm = m_userKeyingMaterial;
+
+            // RFC 3370 sec. 4.1.2 (static-static DH) and RFC 4490 sec. 4.1.1 (GOST): the ukm MUST be present
+            // TODO Consider delegating to an OID classifier for static-key agreement schemes
+            if (kdfUkm == null &&
+                (PkcsObjectIdentifiers.IdAlgSsdh.Equals(m_keyAgreementOid) || CmsUtilities.IsGost(m_keyAgreementOid)))
+            {
+                throw new CmsException("User keying material must be set for static keys.");
+            }
+
+            // RFC 8418 sec. 2.2: for the HKDF schemes a ukm is both the entityUInfo of the
+            // ECC-CMS-SharedInfo and the HKDF salt
+            if (kdfUkm != null && CmsUtilities.IsHkdf(m_keyAgreementOid))
+            {
+                // TODO[cms] Add HKDF support, with some way to handle UKM
+                throw new NotImplementedException();
+            }
+
             AlgorithmIdentifier keyEncAlgorithm = new AlgorithmIdentifier(m_keyEncryptionOid, keyEncAlgParams);
             AlgorithmIdentifier keyAgreeAlgorithm = new AlgorithmIdentifier(m_keyAgreementOid, keyEncAlgorithm);
 
             bool isMqv = CmsUtilities.IsMqv(m_keyAgreementOid);
 
             AsymmetricCipherKeyPair ephemeralKeyPair = null;
-            Asn1OctetString ukm = null;
+            Asn1OctetString ukm = DerOctetString.WithContentsOptional(kdfUkm);
+
             if (isMqv)
             {
                 try
@@ -111,8 +133,10 @@ namespace Org.BouncyCastle.Cms
                     ephemeralKeyPair = kpg.GenerateKeyPair();
 
                     var ephemeralPublicKey = CreateOriginatorPublicKey(ephemeralKeyPair.Public);
-                    var addedukm = DerOctetString.FromContentsOptional(m_userKeyingMaterial);
-                    ukm = new DerOctetString(new MQVuserKeyingMaterial(ephemeralPublicKey, addedukm));
+                    var mqvUkm = new MQVuserKeyingMaterial(ephemeralPublicKey, addedukm: ukm);
+
+                    // The MQVuserKeyingMaterial is sent DER-encoded in KeyAgreeRecipientInfo.ukm
+                    ukm = new DerOctetString(mqvUkm);
 
                     senderPrivateParams = new MqvPrivateParameters(
                         (ECPrivateKeyParameters)senderPrivateParams,
@@ -125,8 +149,8 @@ namespace Org.BouncyCastle.Cms
                 }
             }
 
-            if (m_recipientIDs.Count < 1)
-                throw new CmsException("No recipients associated with generator");
+            senderPrivateParams = ParameterUtilities.WithRandom(senderPrivateParams, random);
+            senderPrivateParams = ParameterUtilities.WithUkm(senderPrivateParams, kdfUkm);
 
             Asn1EncodableVector recipientEncryptedKeys = new Asn1EncodableVector(m_recipientIDs.Count);
             for (int i = 0; i < m_recipientIDs.Count; ++i)
@@ -141,23 +165,11 @@ namespace Org.BouncyCastle.Cms
                         (ECPublicKeyParameters)recipientPublicParams,
                         (ECPublicKeyParameters)recipientPublicParams);
                 }
-                /*
-                 * TODO[cms] Figure out how this gets used in bc-java. Probably we need to init the agreement
-                 * with parameters that include a ParametersWithUkm.
-                 */
-                //else if (CmsUtilities.IsEC(m_keyAgreementOid))
-                //{
-                //    //(static) KeyMaterialGenerator ecc_cms_Generator = new RFC5753KeyMaterialGenerator();
-                //    byte[] ukmKeyingMaterial = ecc_cms_Generator.generateKDFMaterial(keyEncryptionAlgorithm,
-                //    keySizeProvider.getKeySize(keyEncryptionOID), userKeyingMaterial);
-
-                //    agreementParamSpec = new UserKeyingMaterialSpec(ukmKeyingMaterial);
-                //}
 
                 // Use key agreement to choose a wrap key for this recipient
                 IBasicAgreement keyAgreement = AgreementUtilities.GetBasicAgreementWithKdf(m_keyAgreementOid,
-                    m_keyEncryptionOid);
-                keyAgreement.Init(new ParametersWithRandom(senderPrivateParams, random));
+                    keyEncAlgorithm);
+                keyAgreement.Init(senderPrivateParams);
                 BigInteger agreedValue = keyAgreement.CalculateAgreement(recipientPublicParams);
 
                 int keyEncryptionKeySize = GeneratorUtilities.GetDefaultKeySize(m_keyEncryptionOid) / 8;

@@ -168,7 +168,7 @@ namespace Org.BouncyCastle.Tls
 
                 /*
                  * TODO[tls13] Confirm fields in the ClientHello haven't changed
-                 * 
+                 *
                  * RFC 8446 4.1.2 [..] when the server has responded to its ClientHello with a
                  * HelloRetryRequest [..] the client MUST send the same ClientHello without
                  * modification, except as follows: [key_share, early_data, cookie, pre_shared_key,
@@ -219,7 +219,7 @@ namespace Org.BouncyCastle.Tls
 
                 /*
                  * NOTE: Currently no server support for session resumption
-                 * 
+                 *
                  * If adding support, ensure securityParameters.tlsUnique is set to the localVerifyData, but
                  * ONLY when extended_master_secret has been negotiated (otherwise NULL).
                  */
@@ -339,9 +339,11 @@ namespace Org.BouncyCastle.Tls
             securityParameters.m_truncatedHmac = false;
 
             /*
-             * TODO[tls13] RFC 8446 4.4.2.1. OCSP Status and SCT Extensions.
-             * 
-             * OCSP information is carried in an extension for a CertificateEntry.
+             * RFC 8446 4.4.2.1. OCSP information is carried in an extension of the CertificateEntry the certificate it
+             * answers for is in, so there is nothing to echo here and nothing to send as a "certificate_status"
+             * message; a version of 1 records only that the client asked, which is what GetCertificateStatus()
+             * consults when the Certificate message is assembled.
+             * "status_request_v2" is not honoured at all - RFC 8446 sec. 4.2.1 leaves it out of TLS 1.3.
              */
             securityParameters.m_statusRequestVersion =
                 clientHelloExtensions.ContainsKey(ExtensionType.status_request) ? 1 : 0;
@@ -401,7 +403,7 @@ namespace Org.BouncyCastle.Tls
             this.m_offeredCipherSuites = clientHello.CipherSuites;
 
 
- 
+
             SecurityParameters securityParameters = m_tlsServerContext.SecurityParameters;
 
             m_tlsServerContext.SetClientSupportedVersions(
@@ -422,7 +424,7 @@ namespace Org.BouncyCastle.Tls
                 clientVersion = ProtocolVersion.GetLatestTls(m_tlsServerContext.ClientSupportedVersions);
             }
 
-            // Set the legacy_record_version to use for early alerts 
+            // Set the legacy_record_version to use for early alerts
             m_recordStream.SetWriteVersion(clientVersion);
 
             if (!ProtocolVersion.SERVER_EARLIEST_SUPPORTED_TLS.IsEqualOrEarlierVersionOf(clientVersion))
@@ -483,7 +485,8 @@ namespace Org.BouncyCastle.Tls
 
             this.m_clientExtensions = clientHello.Extensions;
 
-            byte[] clientRenegExtData = TlsUtilities.GetExtensionData(m_clientExtensions, ExtensionType.renegotiation_info);
+            byte[] clientRenegExtData = TlsUtilities.GetExtensionData(m_clientExtensions,
+                ExtensionType.renegotiation_info);
 
             // NOT renegotiating
             {
@@ -520,11 +523,8 @@ namespace Org.BouncyCastle.Tls
                      */
                     securityParameters.m_secureRenegotiation = true;
 
-                    if (!Arrays.FixedTimeEquals(clientRenegExtData,
-                        CreateRenegotiationInfo(TlsUtilities.EmptyBytes)))
-                    {
+                    if (!Arrays.FixedTimeEquals(clientRenegExtData, CreateRenegotiationInfo(TlsUtilities.EmptyBytes)))
                         throw new TlsFatalAlert(AlertDescription.handshake_failure);
-                    }
                 }
             }
 
@@ -648,6 +648,11 @@ namespace Org.BouncyCastle.Tls
                     :   m_tlsServer.GetServerExtensions();
 
                 this.m_serverExtensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(sessionServerExtensions);
+
+                if (resumedSession)
+                {
+                    TlsExtensionsUtilities.RemoveStatusRequestExtensions(m_serverExtensions);
+                }
             }
 
             m_tlsServer.GetServerExtensionsForConnection(m_serverExtensions);
@@ -659,9 +664,7 @@ namespace Org.BouncyCastle.Tls
                  */
                 if (securityParameters.IsSecureRenegotiation)
                 {
-                    byte[] serverRenegExtData = TlsUtilities.GetExtensionData(m_serverExtensions,
-                        ExtensionType.renegotiation_info);
-                    bool noRenegExt = (null == serverRenegExtData);
+                    bool noRenegExt = !TlsUtilities.HasExtension(m_serverExtensions, ExtensionType.renegotiation_info);
 
                     if (noRenegExt)
                     {
@@ -758,7 +761,7 @@ namespace Org.BouncyCastle.Tls
 
             /*
              * TODO[tls13] Abbreviated handshakes (PSK resumption)
-             * 
+             *
              * NOTE: No CertificateRequest, Certificate, CertificateVerify messages, but client
              * might now send EndOfEarlyData after receiving server Finished message.
              */
@@ -1163,7 +1166,7 @@ namespace Org.BouncyCastle.Tls
                             /*
                              * RFC 5246 If no suitable certificate is available, the client MUST send a
                              * certificate message containing no certificates.
-                             * 
+                             *
                              * NOTE: In previous RFCs, this was SHOULD instead of MUST.
                              */
                             throw new TlsFatalAlert(AlertDescription.unexpected_message);
@@ -1308,9 +1311,6 @@ namespace Org.BouncyCastle.Tls
         /// <exception cref="IOException"/>
         protected virtual void NotifyClientCertificate(Certificate clientCertificate)
         {
-            if (null == m_certificateRequest)
-                throw new TlsFatalAlert(AlertDescription.internal_error);
-
             TlsUtilities.ProcessClientCertificate(m_tlsServerContext, clientCertificate, m_keyExchange, m_tlsServer);
         }
 
@@ -1331,6 +1331,16 @@ namespace Org.BouncyCastle.Tls
             Certificate clientCertificate = Certificate.Parse(options, m_tlsServerContext, buf, null);
 
             AssertEmpty(buf);
+
+            /*
+             * RFC 8446 4.4.2. If this message is in response to a CertificateRequest, the value of
+             * certificate_request_context in that message.
+             */
+            if (!m_certificateRequest.HasCertificateRequestContext(clientCertificate.GetCertificateRequestContext()))
+                throw new TlsFatalAlert(AlertDescription.illegal_parameter);
+
+            TlsUtilities.Check13CertificateEntryExtensions(clientCertificate,
+                m_certificateRequest.CreateExtensions13());
 
             NotifyClientCertificate(clientCertificate);
         }
@@ -1481,15 +1491,22 @@ namespace Org.BouncyCastle.Tls
                 // Certificate
                 {
                     /*
-                     * TODO[tls13] Note that we are expecting the TlsServer implementation to take care of
-                     * e.g. adding optional "status_request" extension to each CertificateEntry.
+                     * No CertificateStatus message is sent; TLS 1.3 carries the response in a "status_request"
+                     * extension of the CertificateEntry it answers for, per RFC 8446 sec. 4.4.2.1. The TlsServer
+                     * supplies it through the same GetCertificateStatus() callback either way - see
+                     * TlsUtilities.Add13CertificateStatus for how the two shapes it may return are distributed over the
+                     * entries.
+                     *
+                     * TODO[tls13] RFC 8446 4.4.2.1 also has the SCT extension travelling per entry.
                      */
-                    /*
-                     * No CertificateStatus message is sent; TLS 1.3 uses per-CertificateEntry
-                     * "status_request" extension instead.
-                     */
-
                     Certificate serverCertificate = serverCredentials.Certificate;
+
+                    if (securityParameters.StatusRequestVersion > 0)
+                    {
+                        serverCertificate = TlsUtilities.Add13CertificateStatus(serverCertificate,
+                            m_tlsServer.GetCertificateStatus());
+                    }
+
                     Send13CertificateMessage(serverCertificate);
                     securityParameters.m_tlsServerEndPoint = null;
                     this.m_connectionState = CS_SERVER_CERTIFICATE;

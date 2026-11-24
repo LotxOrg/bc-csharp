@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Utilities;
@@ -9,20 +10,28 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
     // TODO[api] Make internal
     public static class LMOts
     {
-        private static ushort D_PBLC = 0x8080;
-        private static int ITER_K = 20;
-        private static int ITER_PREV = 23;
-        private static int ITER_J = 22;
-        
-        internal static int SEED_RANDOMISER_INDEX = ~2;
-        internal static int MAX_HASH = 32;
-        internal static ushort D_MESG = 0x8181;
+        // Signed, since that is what U16Str takes; the value written is the RFC 8554 typecode either way
+        private const short D_PBLC = unchecked((short)0x8080);
+
+        // Offsets into the buffer a Winternitz chain is iterated in, which holds one hash input throughout:
+        //
+        //     I (16) || u32str(q) (4) || u16str(i) (2) || u8str(j) (1) || tmp (n)
+        //     0                  16              ITER_K          ITER_J  ITER_PREV
+        //
+        // Only the chain index i, the step j and the previous value change as the chains are walked, so the
+        // identifier and the leaf number are written once and the whole buffer is hashed in place.
+        private const int ITER_K = 20;
+        private const int ITER_J = 22;
+        private const int ITER_PREV = 23;
+
+        internal const int SEED_RANDOMISER_INDEX = ~2;
+        internal const short D_MESG = unchecked((short)0x8181);
 
         public static int Coef(byte[] S, int i, int w)
         {
             int index = (i * w) / 8;
-            int digits_per_byte = 8 / w;
-            int shift = w * (~i & (digits_per_byte - 1));
+            int digitsPerByte = 8 / w;
+            int shift = w * (~i & (digitsPerByte - 1));
             int mask = (1 << w) - 1;
 
             return (S[index] >> shift) & mask;
@@ -35,45 +44,72 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             int w = parameters.W;
 
             // NB assumption about size of "w" not overflowing integer.
-            int twoWpow = (1 << w) - 1;
+            int maxDigit = (1 << w) - 1;
+            int digitCount = sLen * 8 / w;
 
-            for (int i = 0; i < (sLen * 8 / parameters.W); i++)
+            for (int i = 0; i < digitCount; i++)
             {
-                sum = sum + twoWpow - Coef(S, i, parameters.W);
+                sum = sum + maxDigit - Coef(S, i, w);
             }
             return sum << parameters.Ls;
         }
 
-        public static LMOtsPublicKey LmsOtsGeneratePublicKey(LMOtsPrivateKey privateKey)
+        /// <summary>Append the checksum of the first <c>n</c> bytes of <paramref name="Q"/> to them, as the two
+        /// bytes the chains after the message digest carry (RFC 8554 sec. 4.5).</summary>
+        private static void AppendCksm(byte[] Q, int n, LMOtsParameters parameters)
         {
-#pragma warning disable CS0618 // Type or member is obsolete
-            byte[] K = LmsOtsGeneratePublicKey(privateKey.Parameters, privateKey.I, privateKey.Q,
-                privateKey.MasterSecret);
-            return new LMOtsPublicKey(privateKey.Parameters, privateKey.I, privateKey.Q, K);
-#pragma warning restore CS0618 // Type or member is obsolete
+            int cs = Cksm(Q, n, parameters);
+            Pack.UInt16_To_BE((ushort)cs, Q, n);
         }
 
+        // TODO[api] Remove. Nothing calls this: the key derives its own public key.
+        public static LMOtsPublicKey LmsOtsGeneratePublicKey(LMOtsPrivateKey privateKey) =>
+            privateKey.GeneratePublicKey();
+
         internal static byte[] LmsOtsGeneratePublicKey(LMOtsParameters parameters, byte[] I, int q, byte[] masterSecret)
+        {
+            byte[] K = new byte[parameters.N];
+            LmsOtsGeneratePublicKey(parameters, I, q, masterSecret, K);
+            return K;
+        }
+
+        /// <summary>
+        /// Derive the public key hash K of one-time key <paramref name="q"/> into the first n bytes of
+        /// <paramref name="K"/>, for a caller that consumes it at once and can reuse the buffer (a tree build hashes
+        /// each leaf's K into the leaf and needs it for nothing else).
+        /// </summary>
+        /// <param name="parameters">The LM-OTS parameter set.</param>
+        /// <param name="I">The tree identifier.</param>
+        /// <param name="q">The one-time key number within the tree.</param>
+        /// <param name="masterSecret">The seed the one-time keys are derived from.</param>
+        /// <param name="K">Receives K; at least n bytes.</param>
+        internal static void LmsOtsGeneratePublicKey(LMOtsParameters parameters, byte[] I, int q, byte[] masterSecret,
+            byte[] K)
         {
             //
             // Start hash that computes the final value.
             //
-            IDigest publicContext = LmsUtilities.GetDigest(parameters);
-            byte[] prehashPrefix = Composer.Compose()
+            int p = parameters.P;
+            int n = parameters.N;
+            int maxDigit = (1 << parameters.W) - 1;
+
+            IDigest publicKeyDigest = LmsUtilities.GetDigest(parameters);
+            Composer.Compose()
                 .Bytes(I)
                 .U32Str(q)
                 .U16Str(D_PBLC)
+                // I || u32str(q) || u16str(D_PBLC) is already 22 bytes, so this pads nothing; it states the length
                 .PadUntil(0, 22)
-                .Build();
-            publicContext.BlockUpdate(prehashPrefix, 0, prehashPrefix.Length);
+                .BuildTo(publicKeyDigest);
 
-            IDigest ctx = LmsUtilities.GetDigest(parameters);
+            IDigest chainDigest = LmsUtilities.GetDigest(parameters);
 
             byte[] buf = Composer.Compose()
                 .Bytes(I)
                 .U32Str(q)
-                .PadUntil(0, 23 + ctx.GetDigestSize())
+                .PadUntil(0, ITER_PREV + n)
                 .Build();
+            Debug.Assert(buf.Length == ITER_PREV + n);
 
             SeedDerive derive = new SeedDerive(I, masterSecret, LmsUtilities.GetDigest(parameters))
             {
@@ -81,56 +117,52 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
                 J = 0,
             };
 
-            int p = parameters.P;
-            int n = parameters.N;
-            int twoToWminus1 = (1 << parameters.W) - 1;
-
             for (ushort i = 0; i < p; i++)
             {
                 derive.DeriveSeed(i < p - 1, buf, ITER_PREV); // Private Key!
                 Pack.UInt16_To_BE(i, buf, ITER_K);
-                for (int j = 0; j < twoToWminus1; j++)
+                // The hot spot of LMS: p * (2^w - 1) one-block hashes per one-time key, and a tree build derives
+                // every one-time key. The digest layers (buffering, padding, reset) are a fair share of each step.
+                for (int j = 0; j < maxDigit; j++)
                 {
                     buf[ITER_J] = (byte)j;
-                    ctx.BlockUpdate(buf, 0, buf.Length);
-                    ctx.DoFinal(buf, ITER_PREV);
+                    chainDigest.BlockUpdate(buf, 0, ITER_PREV + n);
+                    chainDigest.DoFinal(buf, ITER_PREV);
                 }
-                publicContext.BlockUpdate(buf, ITER_PREV, n);
+                publicKeyDigest.BlockUpdate(buf, ITER_PREV, n);
             }
 
-            byte[] K = new byte[publicContext.GetDigestSize()];
-            publicContext.DoFinal(K, 0);
-            return K;
+            publicKeyDigest.DoFinal(K, 0);
         }
 
         // TODO[api] Rename
+        // TODO[api] Remove on promotion
+        //
+        // Not marked obsolete, although the name alone earns it: this is the only public route from a message to
+        // an LM-OTS signature, since the Q it computes in between comes from the internal LmsContext.CollectQ.
+        // Deprecating it would need that step made public first, which is only worth doing if standalone LM-OTS
+        // signing has users - RFC 8554 does not offer it as a signature scheme in its own right - so it waits for
+        // the promotion that makes this whole class internal.
+#pragma warning disable IDE1006
         public static LMOtsSignature lm_ots_generate_signature(LMSigParameters sigParams, LMOtsPrivateKey privateKey,
             byte[][] path, byte[] message, bool preHashed)
+#pragma warning restore IDE1006
         {
+            // The randomizer C is an input to Q and is carried in the signature for the verifier to reuse, so a
+            // caller supplying Q must supply the C it hashed into it; there is no parameter here to receive it.
+            if (preHashed)
+                throw new ArgumentException("pre-hashed signing must use LMOtsGenerateSignature", nameof(preHashed));
+
             //
             // Add the randomizer.
             //
-            byte[] C;
-            byte[] Q = new byte[MAX_HASH + 2];
+            LmsContext qCtx = privateKey.GetSignatureContext(sigParams, path);
 
-            if (!preHashed)
-            {
-                LmsContext qCtx = privateKey.GetSignatureContext(sigParams, path);
+            LmsUtilities.ByteArray(message, 0, message.Length, qCtx);
 
-                LmsUtilities.ByteArray(message, 0, message.Length, qCtx);
+            byte[] Q = qCtx.CollectQ(privateKey.Parameters);
 
-                C = qCtx.C;
-                Q = qCtx.GetQ();
-            }
-            else
-            {
-                int n = privateKey.Parameters.N;
-
-                C = new byte[n];
-                Array.Copy(message, 0, Q, 0, n);
-            }
-
-            return LMOtsGenerateSignature(privateKey, Q, C);
+            return LMOtsGenerateSignature(privateKey, Q, qCtx.C);
         }
 
         public static LMOtsSignature LMOtsGenerateSignature(LMOtsPrivateKey privateKey, byte[] Q, byte[] C)
@@ -141,128 +173,127 @@ namespace Org.BouncyCastle.Pqc.Crypto.Lms
             int p = parameters.P;
             int w = parameters.W;
 
-            byte[] sigComposer = new byte[p * n];
+            byte[] y = new byte[p * n];
 
-            IDigest ctx = LmsUtilities.GetDigest(parameters);
+            IDigest chainDigest = LmsUtilities.GetDigest(parameters);
 
             SeedDerive derive = privateKey.GetDerivationFunction();
 
-            int cs = Cksm(Q, n, parameters);
-            Q[n] = (byte)((cs >> 8) & 0xFF);
-            Q[n + 1] = (byte)cs;
+            AppendCksm(Q, n, parameters);
 
-#pragma warning disable CS0618 // Type or member is obsolete
-            byte[] tmp = Composer.Compose()
-                .Bytes(privateKey.I)
+            byte[] buf = Composer.Compose()
+                .Bytes(privateKey.InternalI)
                 .U32Str(privateKey.Q)
                 .PadUntil(0, ITER_PREV + n)
                 .Build();
-#pragma warning restore CS0618 // Type or member is obsolete
+            Debug.Assert(buf.Length == ITER_PREV + n);
 
             derive.J = 0;
             for (ushort i = 0; i < p; i++)
             {
-                Pack.UInt16_To_BE(i, tmp, ITER_K);
-                derive.DeriveSeed(i < p - 1, tmp, ITER_PREV);
+                Pack.UInt16_To_BE(i, buf, ITER_K);
+                derive.DeriveSeed(i < p - 1, buf, ITER_PREV);
                 int a = Coef(Q, i, w);
+                // Chain hashing hot spot, as in LmsOtsGeneratePublicKey; about half the steps of a full chain
                 for (int j = 0; j < a; j++)
                 {
-                    tmp[ITER_J] = (byte)j;
-                    ctx.BlockUpdate(tmp, 0, ITER_PREV + n);
-                    ctx.DoFinal(tmp, ITER_PREV);
+                    buf[ITER_J] = (byte)j;
+                    chainDigest.BlockUpdate(buf, 0, ITER_PREV + n);
+                    chainDigest.DoFinal(buf, ITER_PREV);
                 }
-                Array.Copy(tmp, ITER_PREV, sigComposer, n * i, n);
+                Array.Copy(buf, ITER_PREV, y, n * i, n);
             }
 
-            return new LMOtsSignature(parameters, C, sigComposer);
+            return new LMOtsSignature(parameters, C, y);
         }
 
+        // TODO[api] Remove on promotion
         public static bool LMOtsValidateSignature(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message,
             bool prehashed)
         {
-            if (!signature.ParamType.Equals(publicKey.Parameters)) // todo check
+            // This entry point always hashes the message itself; a caller holding Q needs the context-based
+            // LMOtsValidateSignatureCalculate overload.
+            if (prehashed)
+                throw new ArgumentException("pre-hashed verification must use an LmsContext", nameof(prehashed));
+
+            if (!signature.ParamType.Equals(publicKey.Parameters))
                 throw new LmsException("public key and signature ots types do not match");
 
-#pragma warning disable CS0618 // Type or member is obsolete
-            return Arrays.AreEqual(LMOtsValidateSignatureCalculate(publicKey, signature, message), publicKey.K);
-#pragma warning restore CS0618 // Type or member is obsolete
+            return Arrays.AreEqual(LMOtsValidateSignatureCalculate(publicKey, signature, message), publicKey.InternalK);
         }
 
-        public static byte[] LMOtsValidateSignatureCalculate(LMOtsPublicKey publicKey, LMOtsSignature signature, 
+        // TODO[api] Remove on promotion
+        public static byte[] LMOtsValidateSignatureCalculate(LMOtsPublicKey publicKey, LMOtsSignature signature,
             byte[] message)
         {
             LmsContext ctx = publicKey.CreateOtsContext(signature);
 
             LmsUtilities.ByteArray(message, ctx);
 
-            return LMOtsValidateSignatureCalculate(ctx);
+            return ctx.CalculateKc();
         }
 
-        public static byte[] LMOtsValidateSignatureCalculate(LmsContext context)
+        // TODO[api] Remove on promotion
+        public static byte[] LMOtsValidateSignatureCalculate(LmsContext context) => context.CalculateKc();
+
+        /// <summary>
+        /// Kc, the LM-OTS public key a signature computes for itself: each Winternitz chain is walked from the
+        /// step the signature stopped at to the end, and the ends are hashed together (RFC 8554 sec. 4.6). It
+        /// matches the public key's own K exactly when the signature is valid for the message Q came from.
+        /// </summary>
+        /// <param name="publicKey">The one-time public key the signature claims to be under, for the parameter
+        /// set, the identifier and the leaf number the chains are computed with.</param>
+        /// <param name="signature">The signature whose chain ends are walked to their ends.</param>
+        /// <param name="Q">The message hash, with room for the checksum this appends.</param>
+        internal static byte[] CalculateKc(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] Q)
         {
-            LMOtsPublicKey publicKey = context.PublicKey;
             LMOtsParameters parameters = publicKey.Parameters;
-            object sig = context.Signature;
-            LMOtsSignature signature;
-            if (sig is LmsSignature lmsSignature)
-            {
-                signature = lmsSignature.OtsSignature;
-            }
-            else
-            {
-                signature = (LMOtsSignature)sig;
-            }
 
             int n = parameters.N;
             int w = parameters.W;
             int p = parameters.P;
-            byte[] Q = context.GetQ();
 
-            int cs = Cksm(Q, n, parameters);
-            Q[n] = (byte)((cs >> 8) & 0xFF);
-            Q[n + 1] = (byte)cs;
+            AppendCksm(Q, n, parameters);
 
-#pragma warning disable CS0618 // Type or member is obsolete
-            byte[] I = publicKey.I;
-#pragma warning restore CS0618 // Type or member is obsolete
+            byte[] I = publicKey.InternalI;
             int q = publicKey.Q;
 
-            IDigest finalContext = LmsUtilities.GetDigest(parameters);
-            LmsUtilities.ByteArray(I, finalContext);
-            LmsUtilities.U32Str(q, finalContext);
-            LmsUtilities.U16Str((short)D_PBLC, finalContext);
+            IDigest publicKeyDigest = LmsUtilities.GetDigest(parameters);
+            LmsUtilities.ByteArray(I, publicKeyDigest);
+            LmsUtilities.U32Str(q, publicKeyDigest);
+            LmsUtilities.U16Str(D_PBLC, publicKeyDigest);
 
-            byte[] tmp = Composer.Compose()
+            byte[] buf = Composer.Compose()
                 .Bytes(I)
                 .U32Str(q)
                 .PadUntil(0, ITER_PREV + n)
                 .Build();
+            Debug.Assert(buf.Length == ITER_PREV + n);
 
-            int max_digit = (1 << w) - 1;
+            int maxDigit = (1 << w) - 1;
 
-#pragma warning disable CS0618 // Type or member is obsolete
-            byte[] y = signature.Y;
-#pragma warning restore CS0618 // Type or member is obsolete
+            byte[] y = signature.InternalY;
 
-            IDigest ctx = LmsUtilities.GetDigest(parameters);
+            IDigest chainDigest = LmsUtilities.GetDigest(parameters);
             for (ushort i = 0; i < p; i++)
             {
-                Pack.UInt16_To_BE(i, tmp, ITER_K);
-                Array.Copy(y, i * n, tmp, ITER_PREV, n);
+                Pack.UInt16_To_BE(i, buf, ITER_K);
+                Array.Copy(y, i * n, buf, ITER_PREV, n);
                 int a = Coef(Q, i, w);
 
-                for (int j = a; j < max_digit; j++)
+                // Chain hashing hot spot, as in LmsOtsGeneratePublicKey; the steps the signer left undone
+                for (int j = a; j < maxDigit; j++)
                 {
-                    tmp[ITER_J] = (byte)j;
-                    ctx.BlockUpdate(tmp, 0, ITER_PREV + n);
-                    ctx.DoFinal(tmp, ITER_PREV);
+                    buf[ITER_J] = (byte)j;
+                    chainDigest.BlockUpdate(buf, 0, ITER_PREV + n);
+                    chainDigest.DoFinal(buf, ITER_PREV);
                 }
 
-                finalContext.BlockUpdate(tmp, ITER_PREV, n);
+                publicKeyDigest.BlockUpdate(buf, ITER_PREV, n);
             }
 
             byte[] K = new byte[n];
-            finalContext.DoFinal(K, 0);
+            publicKeyDigest.DoFinal(K, 0);
 
             return K;
         }

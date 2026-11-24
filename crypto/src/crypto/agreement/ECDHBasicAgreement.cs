@@ -58,7 +58,7 @@ namespace Org.BouncyCastle.Crypto.Agreement
                 Q = ECAlgorithms.ReferenceMultiply(Q, h);
             }
 
-            ECPoint P = Q.Multiply(d).Normalize();
+            ECPoint P = ECAlgorithms.MultiplySecret(Q, d).Normalize();
             if (P.IsInfinity)
                 throw new InvalidOperationException("Infinity is not a valid agreement value for ECDH");
 

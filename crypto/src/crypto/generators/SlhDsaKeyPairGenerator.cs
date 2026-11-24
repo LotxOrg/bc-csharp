@@ -44,8 +44,7 @@ namespace Org.BouncyCastle.Crypto.Generators
 
             engine.Init(pkSeed);
 
-            // TODO
-            PK pk = new PK(pkSeed, new HT(engine, sk.Seed, pkSeed).HTPubKey);
+            PK pk = new PK(pkSeed, new HT(engine, sk.Seed, pkSeed).PKGen());
 
             return new AsymmetricCipherKeyPair(
                 new SlhDsaPublicKeyParameters(m_parameters, pk),

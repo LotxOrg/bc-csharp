@@ -21,33 +21,33 @@ namespace Org.BouncyCastle.Math.EC
             return new F2mFieldData(m, ks, mul, inv);
         }
 
-        internal readonly int m;
-        internal readonly int[] ks;
-        internal readonly IBinPolyMul mul;
-        internal readonly IBinPolyInv inv;
+        internal readonly int _m;
+        internal readonly int[] _ks;
+        internal readonly IBinPolyMul _mul;
+        internal readonly IBinPolyInv _inv;
 
         internal F2mFieldData(int m, int[] ks, IBinPolyMul mul, IBinPolyInv inv)
         {
-            this.m = m;
-            this.ks = ks;
-            this.mul = mul;
-            this.inv = inv;
+            _m = m;
+            _ks = ks;
+            _mul = mul;
+            _inv = inv;
         }
 
-        internal int K1 => ks[0];
+        internal int K1 => _ks[0];
 
-        internal int K2 => ks.Length >= 2 ? ks[1] : 0;
+        internal int K2 => _ks.Length >= 2 ? _ks[1] : 0;
 
-        internal int K3 => ks.Length >= 3 ? ks[2] : 0;
+        internal int K3 => _ks.Length >= 3 ? _ks[2] : 0;
 
         internal static bool Equals(F2mFieldData a, F2mFieldData b)
         {
             if (a == b)
                 return true;
 
-            return a.m == b.m && Arrays.AreEqual(a.ks, b.ks);
+            return a._m == b._m && Arrays.AreEqual(a._ks, b._ks);
         }
 
-        internal static int GetHashCode(F2mFieldData x) => x.m ^ Arrays.GetHashCode(x.ks);
+        internal static int GetHashCode(F2mFieldData x) => x._m ^ Arrays.GetHashCode(x._ks);
     }
 }

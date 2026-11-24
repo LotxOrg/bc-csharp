@@ -3,8 +3,10 @@ using System.IO;
 using NUnit.Framework;
 
 using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Asn1.CryptoPro;
 using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
@@ -16,6 +18,77 @@ namespace Org.BouncyCastle.OpenSsl.Tests
     public class AllTests
     {
         private readonly SecureRandom Random = new SecureRandom();
+
+        [Test]
+        public void GitHub_584()
+        {
+            var generator = GeneratorUtilities.GetKeyPairGenerator("ECGOST3410");
+            generator.Init(new ECKeyGenerationParameters(CryptoProObjectIdentifiers.GostR3410x2001CryptoProB, Random));
+            var gostKeyPair = generator.GenerateKeyPair();
+            var originalKey = (ECPrivateKeyParameters)gostKeyPair.Private;
+
+            MemoryStream buf = new MemoryStream();
+            using (var pemWriter = new PemWriter(new StreamWriter(buf)))
+            {
+                pemWriter.WriteObject(originalKey);
+            }
+
+            var pemData = buf.ToArray();
+
+            ECPrivateKeyParameters recoveredKey;
+            using (var pemReader = new PemReader(new StreamReader(new MemoryStream(pemData, false))))
+            {
+                recoveredKey = (ECPrivateKeyParameters)pemReader.ReadObject();
+            }
+
+            Assert.AreEqual(originalKey, recoveredKey, "ECGOST3410 private key failed roundtrip");
+        }
+
+        /// <summary>
+        /// A generic "EC" key on a GOST curve is written as an "EC PRIVATE KEY" (id-ecPublicKey with the curve OID),
+        /// reads back as the same generic key rather than being promoted to ECGOST3410, and remains usable for
+        /// ECGOST3410 signatures.
+        /// </summary>
+        [Test]
+        public void ECKeyOnGostCurve()
+        {
+            var generator = GeneratorUtilities.GetKeyPairGenerator("EC");
+            generator.Init(new ECKeyGenerationParameters(CryptoProObjectIdentifiers.GostR3410x2001CryptoProA, Random));
+            var keyPair = generator.GenerateKeyPair();
+
+            var buf = new StringWriter();
+            using (var pemWriter = new PemWriter(buf))
+            {
+                pemWriter.WriteObject(keyPair.Private);
+            }
+
+            string pem = buf.ToString();
+            Assert.That(pem, Does.StartWith("-----BEGIN EC PRIVATE KEY-----"));
+
+            AsymmetricCipherKeyPair recovered;
+            using (var pemReader = new PemReader(new StringReader(pem)))
+            {
+                recovered = (AsymmetricCipherKeyPair)pemReader.ReadObject();
+            }
+
+            var privateKey = (ECPrivateKeyParameters)recovered.Private;
+            Assert.That(privateKey, Is.EqualTo(keyPair.Private));
+            Assert.That(privateKey.AlgorithmName, Is.EqualTo("EC"));
+            Assert.That(privateKey.Parameters, Is.Not.InstanceOf<ECGost3410Parameters>());
+            Assert.That(privateKey.PublicKeyParamSet, Is.EqualTo(CryptoProObjectIdentifiers.GostR3410x2001CryptoProA));
+            Assert.That(recovered.Public, Is.EqualTo(keyPair.Public));
+
+            var message = Strings.ToByteArray("ECKeyOnGostCurve");
+
+            var signer = SignerUtilities.GetSigner("GOST3411withECGOST3410");
+            signer.Init(true, new ParametersWithRandom(privateKey, Random));
+            signer.BlockUpdate(message, 0, message.Length);
+            var signature = signer.GenerateSignature();
+
+            signer.Init(false, keyPair.Public);
+            signer.BlockUpdate(message, 0, message.Length);
+            Assert.That(signer.VerifySignature(signature), Is.True);
+        }
 
         [Test]
         public void Pkcs8Encrypted()

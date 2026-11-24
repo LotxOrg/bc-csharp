@@ -1,17 +1,17 @@
 using System;
-using System.Collections.Generic;
+
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.CryptoPro;
 using Org.BouncyCastle.Asn1.EdEC;
 using Org.BouncyCastle.Asn1.Oiw;
 using Org.BouncyCastle.Asn1.Pkcs;
-using Org.BouncyCastle.Asn1.Rosstandart;
 using Org.BouncyCastle.Asn1.Sec;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto.Utilities;
 using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
@@ -23,15 +23,6 @@ namespace Org.BouncyCastle.Pkcs
     /// </summary>
     public static class PrivateKeyInfoFactory
     {
-        private static readonly HashSet<DerObjectIdentifier> cryptoProOids = new HashSet<DerObjectIdentifier>
-        {
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProA,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProB,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProC,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProXchA,
-            CryptoProObjectIdentifiers.GostR3410x2001CryptoProXchB,
-        };
-
         /// <summary>
         /// Create a <see cref="PrivateKeyInfo"/> representation of a private key.
         /// </summary>
@@ -120,6 +111,20 @@ namespace Org.BouncyCastle.Pkcs
 
             if (privateKey is ECPrivateKeyParameters ecKey)
             {
+                // ECGOST3410
+                var gostParameters = ECGost3410Utilities.GetEncodingParameters(ecKey);
+                if (gostParameters != null)
+                {
+                    var gostAlgID = ECGost3410Utilities.CreateAlgorithmIdentifier(gostParameters);
+
+                    int size = ECGost3410Utilities.GetFieldElementEncodingLength(gostParameters);
+
+                    // Little-endian, fixed length
+                    byte[] encKey = Arrays.ReverseInPlace(BigIntegers.AsUnsignedByteArray(size, ecKey.D));
+
+                    return new PrivateKeyInfo(gostAlgID, new DerOctetString(encKey), attributes);
+                }
+
                 var pub = ECKeyPairGenerator.GetCorrespondingPublicKey(ecKey);
                 var q = pub.Q;
 
@@ -136,66 +141,13 @@ namespace Org.BouncyCastle.Pkcs
                 DerBitString publicKey = new DerBitString(pubEncoding);
 
                 ECDomainParameters dp = ecKey.Parameters;
-
-                // ECGOST3410
-                if (dp is ECGost3410Parameters domainParameters)
-                {
-                    Gost3410PublicKeyAlgParameters gostParams = new Gost3410PublicKeyAlgParameters(
-                        (domainParameters).PublicKeyParamSet,
-                        (domainParameters).DigestParamSet,
-                        (domainParameters).EncryptionParamSet);
-
-                    int size;
-                    DerObjectIdentifier identifier;
-
-                    if (cryptoProOids.Contains(gostParams.PublicKeyParamSet))
-                    {
-                        size = 32;
-                        identifier = CryptoProObjectIdentifiers.GostR3410x2001;
-                    }
-                    else
-                    {
-                        bool is512 = ecKey.D.BitLength > 256;
-                        identifier = (is512) ?
-                            RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512 :
-                            RosstandartObjectIdentifiers.id_tc26_gost_3410_12_256;
-                        size = (is512) ? 64 : 32;
-                    }
-                    byte[] encKey = new byte[size];
-
-                    ExtractBytes(encKey, size, 0, ecKey.D);
-
-                    return new PrivateKeyInfo(new AlgorithmIdentifier(identifier, gostParams),
-                        new DerOctetString(encKey));
-                } 
-
-
                 int orderBitLength = dp.N.BitLength;
 
-                AlgorithmIdentifier algID;
-                ECPrivateKeyStructure ec;
+                X962Parameters x962 = dp.ToX962Parameters();
 
-                if (ecKey.AlgorithmName == "ECGOST3410")
-                {
-                    if (ecKey.PublicKeyParamSet == null)
-                        throw new NotImplementedException("Not a CryptoPro parameter set");
+                var ec = new ECPrivateKeyStructure(orderBitLength, ecKey.D, publicKey, x962);
 
-                    Gost3410PublicKeyAlgParameters gostParams = new Gost3410PublicKeyAlgParameters(
-                        ecKey.PublicKeyParamSet, CryptoProObjectIdentifiers.GostR3411x94CryptoProParamSet);
-
-                    algID = new AlgorithmIdentifier(CryptoProObjectIdentifiers.GostR3410x2001, gostParams);
-
-                    // TODO Do we need to pass any parameters here?
-                    ec = new ECPrivateKeyStructure(orderBitLength, ecKey.D, publicKey, null);
-                }
-                else
-                {
-                    X962Parameters x962 = dp.ToX962Parameters();
-
-                    ec = new ECPrivateKeyStructure(orderBitLength, ecKey.D, publicKey, x962);
-
-                    algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, x962);
-                }
+                var algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, x962);
 
                 return new PrivateKeyInfo(algID, ec, attributes);
             }
@@ -313,22 +265,6 @@ namespace Org.BouncyCastle.Pkcs
             byte[] keyBytes = cipher.DoFinal(encInfo.GetEncryptedData());
 
             return PrivateKeyInfo.GetInstance(keyBytes);
-        }
-
-        private static void ExtractBytes(byte[] encKey, int size, int offSet, BigInteger bI)
-        {
-            byte[] val = bI.ToByteArray();
-            if (val.Length < size)
-            {
-                byte[] tmp = new byte[size];
-                Array.Copy(val, 0, tmp, tmp.Length - val.Length, val.Length);
-                val = tmp;
-            }
-
-            for (int i = 0; i != size; i++)
-            {
-                encKey[offSet + i] = val[val.Length - 1 - i];
-            }
         }
 
         private static Asn1Encodable GetMLDsaPrivateKeyAsn1(MLDsaPrivateKeyParameters key)
