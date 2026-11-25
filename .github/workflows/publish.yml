@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 env:
   BASE_VERSION: 2.8.0
@@ -44,9 +44,15 @@ jobs:
           -p:Version=${{ steps.version.outputs.value }}
           -p:PackageVersion=${{ steps.version.outputs.value }}
 
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
       - name: Publish
         run: >
           dotnet nuget push "artifacts/*.nupkg"
-          --source https://nuget.pkg.github.com/LotxOrg/index.json
-          --api-key ${{ secrets.GITHUB_TOKEN }}
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate
